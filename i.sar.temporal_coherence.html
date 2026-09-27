@@ -1,0 +1,156 @@
+<h2 id="description">DESCRIPTION</h2>
+<p><em>i.sar.temporal_coherence</em> computes the <strong>temporal
+coherence</strong> of a stack of coregistered SAR Single Look Complex
+(SLC) images of the same area at different dates. It is the
+phase-linking quality measure of distributed-scatterer interferometry
+(SqueeSAR, FRInGE, MiaplPy, dolphin): for every pixel it tells how well
+one consistent phase history explains all N(N−1)/2 interferograms of the
+N dates. Values range from 0 (random phases) to 1 (perfectly
+consistent), and the result is the standard mask for choosing which
+pixels to trust in an InSAR time series.</p>
+<p>The algorithm follows the <code>PhaseLinking</code> operator of the
+ESA SNAP microwave toolbox. For every pixel:</p>
+<ol type="1">
+<li><strong>Statistically homogeneous pixels (SHPs)</strong> are
+selected in a search window of <strong>window</strong> lines × samples
+(default 21×7) centred on the pixel. A candidate is kept when a
+two-sample test at significance <strong>alpha</strong> does not reject
+that its amplitude time series and the one of the centre pixel share one
+distribution: Kolmogorov-Smirnov (<strong>shp_test=ks</strong>,
+default), Anderson-Darling (<strong>shp_test=ad</strong>) or a Welch
+t-test on the log-amplitudes (<strong>shp_test=tlog</strong>, fastest).
+The centre pixel is always one of its SHPs.</li>
+<li>The SHPs are the looks of the N×N sample covariance matrix <em>C =
+(1/L) Σ s s<sup>H</sup></em> of the stack, normalised to the coherence
+matrix <em>T<sub>ij</sub> = C<sub>ij</sub> / √(C<sub>ii</sub>
+C<sub>jj</sub>)</em>. With the <strong>-b</strong> flag the magnitude of
+every coherence is corrected for its bias with the number of looks L:
+<em>|γ|² ← max(0, (L|γ|² − 1)/(L − 1))</em>, phase unchanged.</li>
+<li>One phase per date <em>φ<sub>n</sub></em> is estimated from
+<em>T</em>: the dominant eigenvector of <em>T</em>
+(<strong>estimator=evd</strong>, SqueeSAR) or the eigenvector of the
+smallest eigenvalue of <em>|T|<sup>−1</sup> ∘ T</em>
+(<strong>estimator=emi</strong>, lower bias when the coherence is
+low).</li>
+<li>The temporal coherence is the goodness of fit of these phases to all
+pairs (Pepe and Lanari): <em>γ<sub>T</sub> = 2/(N(N−1))
+|Σ<sub>i&lt;j</sub> exp(j(arg T<sub>ij</sub> − (φ<sub>i</sub> −
+φ<sub>j</sub>)))|</em>.</li>
+</ol>
+<p>A pixel is not estimated (NULL in <strong>output</strong>) when one
+of its dates is NULL or has a zero sample (SLC no-data), or when it has
+fewer SHPs than <strong>min_shp</strong> (default 20). The minimum is
+never less than the number of dates, so that the covariance matrix has
+full rank. The optional <strong>shp_count</strong> map holds the number
+of SHPs of every pixel whose stack is valid, including those below
+<strong>min_shp</strong>; it helps to tune <strong>window</strong> and
+<strong>alpha</strong>.</p>
+<p>The result does not depend on a reference date nor on the order of
+the inputs.</p>
+<h3 id="input-stack">Input stack</h3>
+<p>Each date is given by its basename: the raster maps
+<code>&lt;basename&gt;_i</code> and <code>&lt;basename&gt;_q</code>
+holding the in-phase and quadrature components, as written by
+<em>r.in.s1slc</em> with <strong>measure=complex</strong> (calibrated or
+not). The basename is also the name of the imagery group made by
+<em>r.in.s1slc</em>, e.g. <code>s1_20230112_iw2_vv</code>. At least 3
+dates are needed.</p>
+<p>The images must be <strong>coregistered</strong> to one common grid
+(same rows, columns and extent; see <em>i.sar.coregistration</em>):
+images imported separately by <em>r.in.s1slc</em> are not, since their
+lines start at different azimuth times. The module fails when the grids
+differ. When the <em>r.in.s1slc</em> metadata
+(<code>cell_misc/&lt;basename&gt;_i/description.json</code>) are
+present, it also fails if the images differ in sub-swath, polarization,
+pass, relative orbit or calibration, or if two of them have the same
+acquisition time.</p>
+<p>The computation follows the current region, which must have the
+resolution of the inputs and be aligned with them, since the SHP window
+is counted in pixels: run
+<code>g.region raster=&lt;basename&gt;_i</code> first, then optionally
+zoom to the area of interest. The search window is cut at the region
+edges.</p>
+<h3 id="output-metadata">Output metadata</h3>
+<p>The output maps receive a title, a semantic label (e.g.
+<code>S1_VV_TEMPORAL_COHERENCE</code>, <code>S1_VV_SHP_COUNT</code>),
+the time span of the stack as timestamp, the command history and a JSON
+file <code>$MAPSET/cell_misc/&lt;map&gt;/description.json</code> listing
+the dates, their products and orbits and the estimation parameters. The
+temporal coherence map gets a grey color table from 0 (black) to 1
+(white).</p>
+<h2 id="notes">NOTES</h2>
+<p>Phase linking assumes that the amplitude and phase statistics are
+stationary over the window: a larger window gives more looks and a
+smoother, higher temporal coherence over homogeneous surfaces, a smaller
+one keeps edges between surfaces. <strong>estimator=evd</strong> is the
+robust default; <strong>estimator=emi</strong> is better on stacks with
+strong temporal decorrelation (vegetation, long time spans). The bias
+correction (<strong>-b</strong>) helps EVD with few looks but can
+degrade EMI.</p>
+<p>The module processes the region in strips of rows, bounded by
+<strong>memory</strong>, and splits each strip into blocks computed in
+parallel by <strong>nprocs</strong> threads. The cost grows with the
+window size and with the square of the number of dates: with 20 dates
+and the default window, count about 3500 pixels per second and per core.
+Restrict the region to the area of interest for large stacks.</p>
+<p>Two details differ from SNAP (microwave toolbox 2026): the
+Anderson-Darling statistic uses the 1/N normalization of Scholz and
+Stephens (1987) eq. 6, as <em>scipy.stats.anderson_ksamp</em>, where
+SNAP scales it by (N−1)/N; and a pair whose coherence is zeroed by the
+bias correction counts with phase 0 in <em>γ<sub>T</sub></em>. The
+critical value of the t-test is the normal quantile of
+<strong>alpha</strong>. Up to 255 dates are supported.</p>
+<p>The module requires NumPy.</p>
+<h2 id="examples">EXAMPLES</h2>
+<p>Import the same bursts of five dates over Sharjah (UAE), coregister
+them on the first one, then compute their temporal coherence:</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="cf">for</span> zip <span class="kw">in</span> S1A_IW_SLC__1SDV_2023<span class="pp">*</span>.zip <span class="kw">;</span> <span class="cf">do</span></span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a>    <span class="va">date</span><span class="op">=</span><span class="va">$(</span><span class="bu">echo</span> <span class="va">$zip</span> <span class="kw">|</span> <span class="fu">cut</span> <span class="at">-c18-25</span><span class="va">)</span></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>    <span class="ex">r.in.s1slc</span> input=<span class="va">$zip</span> output=s1_<span class="va">$date</span> swath=IW2 polarization=VV <span class="dt">\</span></span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>        bbox=55.35,25.25,55.50,25.40 measure=complex</span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a><span class="cf">done</span></span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a><span class="co"># Coregistration on the first date (i.sar.coregistration), producing</span></span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a><span class="co"># s1c_&lt;date&gt;_iw2_vv_i and _q maps on the grid of s1_20230112_iw2_vv.</span></span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a><span class="ex">g.region</span> raster=s1c_20230112_iw2_vv_i</span>
+<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a><span class="ex">i.sar.temporal_coherence</span> <span class="dt">\</span></span>
+<span id="cb1-11"><a href="#cb1-11" aria-hidden="true" tabindex="-1"></a>    input=s1c_20230112_iw2_vv,s1c_20230124_iw2_vv,s1c_20230205_iw2_vv,s1c_20230217_iw2_vv,s1c_20230301_iw2_vv <span class="dt">\</span></span>
+<span id="cb1-12"><a href="#cb1-12" aria-hidden="true" tabindex="-1"></a>    output=tcoh_vv shp_count=nshp_vv nprocs=4</span>
+<span id="cb1-13"><a href="#cb1-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-14"><a href="#cb1-14" aria-hidden="true" tabindex="-1"></a><span class="co"># Keep the reliable pixels.</span></span>
+<span id="cb1-15"><a href="#cb1-15" aria-hidden="true" tabindex="-1"></a><span class="ex">r.mapcalc</span> <span class="st">&quot;tcoh_mask = if(tcoh_vv &gt;= 0.7, 1, null())&quot;</span></span></code></pre></div>
+<p>EMI estimation with an Anderson-Darling SHP test in a larger
+window:</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="ex">i.sar.temporal_coherence</span> input=... output=tcoh_emi <span class="dt">\</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>    estimator=emi shp_test=ad alpha=0.01 window=31,9</span></code></pre></div>
+<h2 id="references">REFERENCES</h2>
+<ul>
+<li>Ferretti, A., Fumagalli, A., Novali, F., Prati, C., Rocca, F.,
+Rucci, A. (2011). A new algorithm for processing interferometric
+data-stacks: SqueeSAR. <em>IEEE Transactions on Geoscience and Remote
+Sensing</em>, 49(9), 3460–3470.</li>
+<li>Ansari, H., De Zan, F., Bamler, R. (2018). Efficient phase
+estimation for interferogram stacks. <em>IEEE Transactions on Geoscience
+and Remote Sensing</em>, 56(7), 4109–4125.</li>
+<li>Pepe, A., Lanari, R. (2006). On the extension of the minimum cost
+flow algorithm for phase unwrapping of multitemporal differential SAR
+interferograms. <em>IEEE Transactions on Geoscience and Remote
+Sensing</em>, 44(9), 2374–2383.</li>
+<li>Scholz, F. W., Stephens, M. A. (1987). K-sample Anderson-Darling
+tests. <em>Journal of the American Statistical Association</em>,
+82(399), 918–924.</li>
+<li>ESA SNAP microwave toolbox, <code>PhaseLinking</code> operator: <a
+href="https://github.com/senbox-org/microwave-toolbox"
+class="uri">https://github.com/senbox-org/microwave-toolbox</a></li>
+</ul>
+<h2 id="see-also">SEE ALSO</h2>
+<p><em><a
+href="https://grass.osgeo.org/grass-stable/manuals/i.group.html">i.group</a>,
+<a href="i.sar.coregistration.html">i.sar.coregistration</a>, <a
+href="i.sar.interferometry.html">i.sar.interferometry</a>, <a
+href="r.in.s1slc.html">r.in.s1slc</a>, <a
+href="https://grass.osgeo.org/grass-stable/manuals/r.mapcalc.html">r.mapcalc</a>,
+<a
+href="https://grass.osgeo.org/grass-stable/manuals/r.support.html">r.support</a></em></p>
+<h2 id="authors">AUTHORS</h2>
+<p>Yann Chemin</p>
