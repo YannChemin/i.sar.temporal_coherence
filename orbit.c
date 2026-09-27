@@ -209,8 +209,11 @@ static void parse_eof(const char *text, double t0, double t1, struct orbit *o)
     }
 }
 
-void orbit_from_file(const struct epoch *e, const char *kind,
-                     const char *cache_dir, struct orbit *o)
+/* Orbit of kind POEORB or RESORB from a file of cache_dir, or downloaded
+   into it. Return 0 when no file covers the acquisition and required is
+   not set; fail otherwise. */
+int orbit_from_file(const struct epoch *e, const char *kind,
+                    const char *cache_dir, int required, struct orbit *o)
 {
     char *mission = epoch_attribute(e, "swath.mission"), prefix[128], *name,
          path[GPATH_MAX], *text = NULL;
@@ -256,8 +259,15 @@ void orbit_from_file(const struct epoch *e, const char *kind,
             snprintf(path, sizeof(path), "/vsizip/%s%s/%.*s", url, name,
                      (int)(strlen(name) - 4), name);
             text = read_vsi(path);
-            if (!text)
-                G_fatal_error(_("Unable to download <%s%s>"), url + 9, name);
+            if (!text) {
+                if (required)
+                    G_fatal_error(_("Unable to download <%s%s>"), url + 9,
+                                  name);
+                G_warning(_("Unable to download <%s%s>"), url + 9, name);
+                G_free(name);
+                name = NULL;
+                continue;
+            }
             /* Cache the unzipped file. */
             if (G_mkdir(cache_dir) != 0 && access(cache_dir, W_OK) != 0)
                 G_warning(_("Unable to create the orbit directory <%s>"),
@@ -273,12 +283,17 @@ void orbit_from_file(const struct epoch *e, const char *kind,
                 }
             }
         }
-        if (!text)
-            G_fatal_error(
-                _("No %s orbit file of %s covers <%s> in <%s> nor on %s "
-                  "(precise orbits are published about three weeks after "
-                  "acquisition; try orbit=restituted or orbit=annotation)"),
-                kind, mission, e->basename, cache_dir, STEP_ORBITS_URL);
+        if (!text) {
+            if (required)
+                G_fatal_error(
+                    _("No %s orbit file of %s covers <%s> in <%s> nor on %s "
+                      "(precise orbits are published about three weeks after "
+                      "acquisition; try orbit=best, orbit=restituted or "
+                      "orbit=annotation)"),
+                    kind, mission, e->basename, cache_dir, STEP_ORBITS_URL);
+            G_free(mission);
+            return 0;
+        }
     }
     snprintf(o->source, sizeof(o->source), "%s", kind);
     parse_eof(text, start - ORBIT_MARGIN, stop + ORBIT_MARGIN, o);
@@ -286,6 +301,24 @@ void orbit_from_file(const struct epoch *e, const char *kind,
     G_free(name);
     G_free(mission);
     orbit_check(o, e, start, stop);
+    return 1;
+}
+
+/* Best orbit of the epoch: precise, else restituted, else annotation. */
+void orbit_best(const struct epoch *e, const char *cache_dir, struct orbit *o)
+{
+    if (orbit_from_file(e, "POEORB", cache_dir, 0, o))
+        return;
+    if (orbit_from_file(e, "RESORB", cache_dir, 0, o)) {
+        G_message(_("No precise orbit for <%s> yet: using the restituted "
+                    "orbit (RESORB)"),
+                  e->basename);
+        return;
+    }
+    G_message(_("No precise nor restituted orbit for <%s>: using the "
+                "annotation state vectors"),
+              e->basename);
+    orbit_from_annotation(e, o);
 }
 
 /* Position and velocity at time t by Lagrange interpolation of the

@@ -27,6 +27,7 @@ struct epoch {
     int has_time;
     struct utc start, end;
     double start_sec;
+    char orbit[32]; /* orbit source used for the phase, "" if none */
 };
 
 /* Estimation settings shared by the host and the kernel build. */
@@ -85,8 +86,9 @@ void shp_constants(struct settings *s);
 
 /* orbit.c */
 void orbit_from_annotation(const struct epoch *e, struct orbit *o);
-void orbit_from_file(const struct epoch *e, const char *kind,
-                     const char *cache_dir, struct orbit *o);
+int orbit_from_file(const struct epoch *e, const char *kind,
+                    const char *cache_dir, int required, struct orbit *o);
+void orbit_best(const struct epoch *e, const char *cache_dir, struct orbit *o);
 void orbit_state(const struct orbit *o, double t, double *pos, double *vel);
 void orbit_free(struct orbit *o);
 

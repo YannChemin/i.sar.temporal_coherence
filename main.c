@@ -233,6 +233,10 @@ static void write_metadata(const char *name, const struct settings *s,
         set_json_attribute(eo, "product", &epochs[i], "product.product_name");
         set_json_attribute(eo, "absolute_orbit", &epochs[i],
                            "product.absolute_orbit_start");
+        if (epochs[i].orbit[0])
+            G_json_object_set_string(eo, "orbit", epochs[i].orbit);
+        else
+            G_json_object_set_null(eo, "orbit");
         G_json_array_append_value(arr, ev);
     }
     G_json_object_set_value(obj, "epochs", list);
@@ -473,15 +477,18 @@ int main(int argc, char *argv[])
     opt.orbit->key = "orbit";
     opt.orbit->type = TYPE_STRING;
     opt.orbit->required = NO;
-    opt.orbit->options = "precise,restituted,annotation";
-    opt.orbit->answer = "precise";
+    opt.orbit->options = "best,precise,restituted,annotation";
+    opt.orbit->answer = "best";
     opt.orbit->label = _("Orbits used for the flat-earth and topographic "
                          "phase");
+    opt.orbit->description = _("Orbit files are searched in orbit_dir, then "
+                               "downloaded");
     G_asprintf((char **)&opt.orbit->descriptions,
-               "precise;%s;restituted;%s;annotation;%s",
-               _("Precise orbit files (POEORB, about 5 cm), downloaded if "
-                 "needed"),
-               _("Restituted orbit files (RESORB), downloaded if needed"),
+               "best;%s;precise;%s;restituted;%s;annotation;%s",
+               _("Per date, precise if available, else restituted, else "
+                 "annotation"),
+               _("Precise orbit files only (POEORB, about 5 cm)"),
+               _("Restituted orbit files only (RESORB)"),
                _("State vectors of the product annotation"));
     opt.orbit->guisection = _("Geometry");
 
@@ -662,11 +669,15 @@ int main(int argc, char *argv[])
         for (i = 0; i < n; i++) {
             if (!strcmp(opt.orbit->answer, "annotation"))
                 orbit_from_annotation(&epochs[i], &orbits[i]);
+            else if (!strcmp(opt.orbit->answer, "best"))
+                orbit_best(&epochs[i], cache, &orbits[i]);
             else
                 orbit_from_file(
                     &epochs[i],
                     !strcmp(opt.orbit->answer, "precise") ? "POEORB" : "RESORB",
-                    cache, &orbits[i]);
+                    cache, 1, &orbits[i]);
+            G_strlcpy(epochs[i].orbit, orbits[i].source,
+                      sizeof(epochs[i].orbit));
         }
         s.orbit = opt.orbit->answer;
 

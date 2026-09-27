@@ -116,22 +116,32 @@ ellipsoid, e.g. from a DEM-assisted coregistration. Heights above the
 geoid can be used: the geoid undulation is smooth and hardly changes the
 phase within a window. Pixels with a NULL height are NULL.</p>
 <h3 id="orbits">Orbits</h3>
-<p>The orbits come from:</p>
-<ul>
-<li><strong>orbit=precise</strong> (default): the Sentinel-1 precise
-orbit files (POEORB, about 5 cm), published about three weeks after
-acquisition;</li>
-<li><strong>orbit=restituted</strong>: the restituted orbit files
-(RESORB), available within hours;</li>
-<li><strong>orbit=annotation</strong>: the state vectors of the product
-annotation, imported by <em>r.in.s1slc</em>.</li>
-</ul>
+<p>The orbits come, per date, from (<strong>orbit=best</strong>,
+default):</p>
+<ol type="1">
+<li>the Sentinel-1 precise orbit file (POEORB, about 5 cm), published
+about three weeks after acquisition;</li>
+<li>else the restituted orbit file (RESORB), available within
+hours;</li>
+<li>else the state vectors of the product annotation, imported by
+<em>r.in.s1slc</em>, so that a very recent date is still processed.</li>
+</ol>
 <p>Orbit files are searched in <strong>orbit_dir</strong> (default
 <code>$HOME/.grass8/sentinel1_orbits</code>), then downloaded from the
 ESA STEP mirror used by SNAP
 (<code>http://step.esa.int/auxdata/orbits/Sentinel-1/</code>) and stored
 there, unzipped. The file whose validity covers the acquisition is used,
-the latest production when several do.</p>
+the latest production when several do. A message names every date that
+falls back to a restituted orbit or to the annotation, and the orbit
+source of every date is recorded in the <code>description.json</code> of
+the outputs. <strong>orbit=precise</strong>,
+<strong>orbit=restituted</strong> or <strong>orbit=annotation</strong>
+use one source for all dates, and fail when an orbit file is
+missing.</p>
+<p>The orbit accuracy matters little for coherence: an orbit error δB on
+a perpendicular baseline B leaves a residual fringe rate of δB/B of the
+flat-earth one, about 1 % for a metre on 100 m, negligible over a
+window. Precise orbits matter for the interferometric phase itself.</p>
 <h3 id="output-metadata">Output metadata</h3>
 <p>The output maps receive a title, a semantic label (e.g.
 <code>S1_VV_TEMPORAL_COHERENCE</code>, <code>S1_VV_SHP_COUNT</code>,
@@ -211,8 +221,8 @@ them on the first one, then compute their temporal coherence:</p>
 <span id="cb1-14"><a href="#cb1-14" aria-hidden="true" tabindex="-1"></a><span class="co"># Keep the reliable pixels.</span></span>
 <span id="cb1-15"><a href="#cb1-15" aria-hidden="true" tabindex="-1"></a><span class="ex">r.mapcalc</span> <span class="st">&quot;tcoh_mask = if(tcoh_vv &gt;= 0.7, 1, null())&quot;</span></span></code></pre></div>
 <p>Date the harvests of crop fields: remove the flat-earth and
-topographic phase with precise orbits and an elevation map in radar
-geometry, and write the coherence of every pair of consecutive
+topographic phase with the best available orbits and an elevation map in
+radar geometry, and write the coherence of every pair of consecutive
 dates:</p>
 <div class="sourceCode" id="cb2"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="ex">i.sar.temporal_coherence</span> <span class="dt">\</span></span>
 <span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>    input=s1c_20230112_iw2_vv,s1c_20230124_iw2_vv,s1c_20230205_iw2_vv,s1c_20230217_iw2_vv,s1c_20230301_iw2_vv <span class="dt">\</span></span>

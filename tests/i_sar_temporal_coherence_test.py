@@ -522,7 +522,10 @@ def test_orbit_download(xy_session, tmp_path):
             {"flags": "f", "reference": 0, "orbit": "annotation", "geometry": False},
             "No orbit state vectors",
         ),
-        ({"flags": "f", "reference": 0, "mission": "S1X"}, "No POEORB orbit file"),
+        (
+            {"flags": "f", "reference": 0, "mission": "S1X", "orbit": "precise"},
+            "No POEORB orbit file",
+        ),
     ],
 )
 def test_geometry_failures(xy_session, tmp_path, kwargs, message):
@@ -554,3 +557,60 @@ def test_geometry_failures(xy_session, tmp_path, kwargs, message):
     )
     assert proc.returncode != 0
     assert message in " ".join(proc.stderr.split())
+
+
+def test_orbit_best(xy_session, tmp_path):
+    # Precise orbits for the first two dates, restituted for the third,
+    # none for the last: it falls back to its annotation state vectors. The
+    # unknown mission S1X keeps the download from finding real files.
+    geometry = geometry_stack(4)
+    stack, _phase = ramped_stack(geometry, np.zeros((ROWS, COLS)))
+    names = []
+    for k in range(4):
+        extra = geometry.metadata(k)
+        extra["swath"]["mission"] = "S1X"
+        name = "s_{:02d}_iw1_vv".format(k)
+        write_epoch(xy_session, name, stack[k], 12 * k, extra=extra)
+        names.append(name)
+    gs.run_command("g.region", raster=names[0] + "_i", env=xy_session.env)
+    orbit_dir = tmp_path / "orbits"
+    orbit_dir.mkdir()
+    for k, kind in ((0, "POEORB"), (1, "POEORB"), (2, "RESORB")):
+        (orbit_dir / geometry.eof_name(k, kind, mission="S1X")).write_text(
+            geometry.eof(k)
+        )
+    common = {"input": ",".join(names), "reference": names[0], "min_shp": 4}
+    proc = run_module(
+        xy_session, "f", output="best", orbit="best", orbit_dir=orbit_dir, **common
+    )
+    assert proc.returncode == 0, proc.stderr
+    stderr = " ".join(proc.stderr.split())
+    assert "No precise orbit for <{}> yet".format(names[2]) in stderr
+    assert "No precise nor restituted orbit for <{}>".format(names[3]) in stderr
+    env = gs.gisenv(env=xy_session.env)
+    path = os.path.join(
+        env["GISDBASE"],
+        env["LOCATION_NAME"],
+        env["MAPSET"],
+        "cell_misc",
+        "best",
+        "description.json",
+    )
+    with open(path) as fd:
+        meta = json.load(fd)
+    assert meta["temporal_coherence"]["orbit"] == "best"
+    assert [e["orbit"] for e in meta["epochs"]] == [
+        "POEORB",
+        "POEORB",
+        "RESORB",
+        "annotation",
+    ]
+    # The files hold the same synthetic orbits as the annotation.
+    proc = run_module(xy_session, "f", output="ann", orbit="annotation", **common)
+    assert proc.returncode == 0, proc.stderr
+    assert np.allclose(
+        read_map(xy_session, "best"),
+        read_map(xy_session, "ann"),
+        atol=1e-6,
+        equal_nan=True,
+    )

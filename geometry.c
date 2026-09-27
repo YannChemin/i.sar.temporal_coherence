@@ -214,10 +214,8 @@ void geometry_init(struct geometry *g, const struct epoch *epochs, int n,
     g->phase = G_malloc((size_t)g->grid_rows * g->grid_cols * g->nheights * n *
                         sizeof(double));
 
-    G_message(_("Computing the flat-earth%s phase of %d dates from the %s "
-                "orbits..."),
-              g->nheights > 1 ? _(" and topographic") : "", n,
-              orbits[0].source);
+    G_message(_("Computing the flat-earth%s phase of %d dates..."),
+              g->nheights > 1 ? _(" and topographic") : "", n);
     for (gr = 0; gr < g->grid_rows; gr++) {
         const double line = line0 + (double)gr * GRID_STEP;
         const double t = t_first + line * dt;

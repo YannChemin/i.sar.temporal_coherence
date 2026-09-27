@@ -119,20 +119,29 @@ Pixels with a NULL height are NULL.
 
 ### Orbits
 
-The orbits come from:
+The orbits come, per date, from (**orbit=best**, default):
 
-- **orbit=precise** (default): the Sentinel-1 precise orbit files
-  (POEORB, about 5 cm), published about three weeks after acquisition;
-- **orbit=restituted**: the restituted orbit files (RESORB), available
-  within hours;
-- **orbit=annotation**: the state vectors of the product annotation,
-  imported by *r.in.s1slc*.
+1. the Sentinel-1 precise orbit file (POEORB, about 5 cm), published
+   about three weeks after acquisition;
+2. else the restituted orbit file (RESORB), available within hours;
+3. else the state vectors of the product annotation, imported by
+   *r.in.s1slc*, so that a very recent date is still processed.
 
 Orbit files are searched in **orbit_dir** (default
 `$HOME/.grass8/sentinel1_orbits`), then downloaded from the ESA STEP
 mirror used by SNAP (`http://step.esa.int/auxdata/orbits/Sentinel-1/`)
 and stored there, unzipped. The file whose validity covers the
-acquisition is used, the latest production when several do.
+acquisition is used, the latest production when several do. A message
+names every date that falls back to a restituted orbit or to the
+annotation, and the orbit source of every date is recorded in the
+`description.json` of the outputs. **orbit=precise**,
+**orbit=restituted** or **orbit=annotation** use one source for all
+dates, and fail when an orbit file is missing.
+
+The orbit accuracy matters little for coherence: an orbit error δB on a
+perpendicular baseline B leaves a residual fringe rate of δB/B of the
+flat-earth one, about 1 % for a metre on 100 m, negligible over a
+window. Precise orbits matter for the interferometric phase itself.
 
 ### Output metadata
 
@@ -222,8 +231,9 @@ r.mapcalc "tcoh_mask = if(tcoh_vv >= 0.7, 1, null())"
 ```
 
 Date the harvests of crop fields: remove the flat-earth and
-topographic phase with precise orbits and an elevation map in radar
-geometry, and write the coherence of every pair of consecutive dates:
+topographic phase with the best available orbits and an elevation map in
+radar geometry, and write the coherence of every pair of consecutive
+dates:
 
 ```sh
 i.sar.temporal_coherence \

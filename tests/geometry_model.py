@@ -213,8 +213,8 @@ class Stack:
             + "    </List_of_OSVs>\n  </Data_Block>\n</Earth_Explorer_File>\n"
         )
 
-    def eof_name(self, k, kind="POEORB", margin=600.0):
+    def eof_name(self, k, kind="POEORB", margin=600.0, mission="S1A"):
         t0 = self.epoch0 + timedelta(seconds=self.times[k] - margin + 1)
         t1 = self.epoch0 + timedelta(seconds=self.times[k] + margin - 1)
         fmt = "%Y%m%dT%H%M%S"
-        return f"S1A_OPER_AUX_{kind}_OPOD_20990101T000000_V{t0.strftime(fmt)}_{t1.strftime(fmt)}.EOF"
+        return f"{mission}_OPER_AUX_{kind}_OPOD_20990101T000000_V{t0.strftime(fmt)}_{t1.strftime(fmt)}.EOF"

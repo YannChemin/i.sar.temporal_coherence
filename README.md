@@ -51,23 +51,25 @@ a change of the surface, e.g. the harvest of a field.
 geometry on the stack grid) the topographic phase, computed from the
 orbits by range-Doppler geometry on the grid of the coregistration
 `reference=` date, as SNAP does for its interferograms. Otherwise these
-fringes lower the coherence estimated over the window. Orbits are the
-precise POEORB files by default (`orbit=precise|restituted|annotation`),
-downloaded through GDAL from the ESA STEP mirror used by SNAP and cached
-in `orbit_dir` (`~/.grass8/sentinel1_orbits`).
+fringes lower the coherence estimated over the window.
 
-## OpenCL
+Orbits are chosen per date by default (`orbit=best`):
 
-One work-item per pixel runs the whole chain; the eigenvector comes from
-a Householder tridiagonal reduction, bisection and inverse iteration
-(Cholesky inverse of |T| for EMI). The kernel needs OpenCL C 1.1 and no
-double precision, so it runs on Mesa Clover. `-l` lists the devices,
-`platform=`/`device=` pick one (default: first GPU). Launches are split
-into ~0.5 s chunks to stay clear of GPU watchdogs.
+1. a precise orbit file (POEORB, ~5 cm, published ~3 weeks after
+   acquisition) found in `orbit_dir` (`~/.grass8/sentinel1_orbits`), else
+   downloaded;
+2. else a restituted orbit file (RESORB, available within hours), found or
+   downloaded the same way;
+3. else the state vectors of the product annotation (imported by
+   *r.in.s1slc*), so that a very recent date is still processed.
 
-With 20 dates and the default window, an AMD Radeon Pro WX 7100 (Mesa
-Clover) processes about 120 000 pixels/s: a three-burst IW sub-swath
-(~37 M pixels) in about five minutes.
+Downloads come through GDAL from the ESA STEP mirror used by SNAP and are
+kept unzipped in `orbit_dir`. A message names every date that falls back,
+and the source used for each date is recorded in the output metadata.
+`orbit=precise|restituted|annotation` forces one source for all dates
+(failing when a file is missing). For coherence, the orbit accuracy
+matters little: a metre of orbit error on a 100 m baseline leaves about
+1 % of the fringe rate, negligible over a window.
 
 ## Input
 
