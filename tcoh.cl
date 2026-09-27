@@ -19,11 +19,11 @@
  * valid is non-zero where every date has a non-null, non-zero sample.
  */
 
-#define MAX_SWEEPS 40
-#define EIG_FLOOR 1.0e-6f
+#define MAX_SWEEPS   40
+#define EIG_FLOOR    1.0e-6f
 /* Smallest Cholesky pivot of |T| (unit diagonal) before falling back to
    the eigendecomposition pseudo-inverse. */
-#define CHOL_FLOOR 1.0e-5f
+#define CHOL_FLOOR   1.0e-5f
 /* Relative magnitude below which a phasor component has no phase. */
 #define PHASOR_FLOOR 1.0e-3f
 
@@ -210,7 +210,8 @@ void tridiagonalize(float *ar, float *ai, float *d, float *e, float *taur,
 
         d[k] = ar[k * N + k];
         for (i = k + 2; i < N; i++)
-            xnorm2 += ar[i * N + k] * ar[i * N + k] + ai[i * N + k] * ai[i * N + k];
+            xnorm2 +=
+                ar[i * N + k] * ar[i * N + k] + ai[i * N + k] * ai[i * N + k];
         if (xnorm2 == 0.0f && ali == 0.0f)
             beta = alr;
         else {
@@ -276,10 +277,10 @@ void tridiagonalize(float *ar, float *ai, float *d, float *e, float *taur,
                     const float vjr = ar[j * N + k], vji = ai[j * N + k];
 
                     /* v_i conj(w_j) + w_i conj(v_j) */
-                    ar[i * N + j] -= vir * wr[j] + vii * wi[j] +
-                                     wr[i] * vjr + wi[i] * vji;
-                    ai[i * N + j] -= vii * wr[j] - vir * wi[j] +
-                                     wi[i] * vjr - wr[i] * vji;
+                    ar[i * N + j] -=
+                        vir * wr[j] + vii * wi[j] + wr[i] * vjr + wi[i] * vji;
+                    ai[i * N + j] -=
+                        vii * wr[j] - vir * wi[j] + wi[i] * vjr - wr[i] * vji;
                 }
             }
         }
@@ -311,8 +312,8 @@ float tridiagonal_eigenvalue(const float *d, const float *e, int index,
     int i, it;
 
     for (i = 0; i < N; i++) {
-        float r = (i > 0 ? fabs(e[i - 1]) : 0.0f) +
-                  (i < N - 1 ? fabs(e[i]) : 0.0f);
+        float r =
+            (i > 0 ? fabs(e[i - 1]) : 0.0f) + (i < N - 1 ? fabs(e[i]) : 0.0f);
 
         lo = fmin(lo, d[i] - r);
         hi = fmax(hi, d[i] + r);
@@ -579,10 +580,6 @@ __kernel void temporal_coherence(__global const float2 *slc,
         }
     }
     count[y * cols + x] = looks;
-#ifdef STOP_AFTER_COVARIANCE
-    coh[y * cols + x] = tr[1] + ti[N + 2];
-    return;
-#endif
     if (looks < MIN_LOOKS) {
         coh[y * cols + x] = NAN;
         return;

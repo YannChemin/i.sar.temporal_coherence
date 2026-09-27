@@ -40,9 +40,9 @@ struct ocl {
     size_t n_slc, n_amp, n_valid, n_coh, n_count;
 };
 
-#define CHECK(err, what)                                                    \
-    do {                                                                    \
-        if ((err) != CL_SUCCESS)                                            \
+#define CHECK(err, what)                                                   \
+    do {                                                                   \
+        if ((err) != CL_SUCCESS)                                           \
             G_fatal_error(_("OpenCL error %d in %s"), (int)(err), (what)); \
     } while (0)
 
@@ -83,8 +83,8 @@ static void device_string(cl_device_id dev, cl_device_info what, char *buf,
         G_strlcpy(buf, "?", len);
 }
 
-static void platform_string(cl_platform_id p, cl_platform_info what,
-                            char *buf, size_t len)
+static void platform_string(cl_platform_id p, cl_platform_info what, char *buf,
+                            size_t len)
 {
     if (clGetPlatformInfo(p, what, len, buf, NULL) != CL_SUCCESS)
         G_strlcpy(buf, "?", len);
@@ -124,11 +124,10 @@ void ocl_list_devices(void)
                             NULL);
             clGetDeviceInfo(devices[d], CL_DEVICE_MAX_COMPUTE_UNITS,
                             sizeof(units), &units, NULL);
-            clGetDeviceInfo(devices[d], CL_DEVICE_GLOBAL_MEM_SIZE,
-                            sizeof(mem), &mem, NULL);
+            clGetDeviceInfo(devices[d], CL_DEVICE_GLOBAL_MEM_SIZE, sizeof(mem),
+                            &mem, NULL);
             fprintf(stdout, "%u|%u|%s|%s|%s|%u|%lu\n", p, d, type_name(type),
-                    name, version, units,
-                    (unsigned long)(mem / (1024 * 1024)));
+                    name, version, units, (unsigned long)(mem / (1024 * 1024)));
         }
         G_free(devices);
     }
@@ -166,8 +165,8 @@ static cl_device_id select_device(int platform, int device)
             for (d = 0; d < nd && !chosen; d++) {
                 cl_device_type type;
 
-                clGetDeviceInfo(devices[d], CL_DEVICE_TYPE, sizeof(type),
-                                &type, NULL);
+                clGetDeviceInfo(devices[d], CL_DEVICE_TYPE, sizeof(type), &type,
+                                NULL);
                 if (type & CL_DEVICE_TYPE_GPU)
                     chosen = devices[d];
             }
@@ -222,14 +221,9 @@ struct ocl *ocl_open(int platform, int device, const struct settings *s,
              "-DN=%d -DWA=%d -DWR=%d -DW=%d -DSHP_TEST=%d -DEMI=%d "
              "-DBIAS=%d -DMIN_LOOKS=%d -DKS_MAX=%d -DAD_NORM=%.9ef "
              "-DAD_SIGMA=%.9ef -DAD_CRIT=%.9ef -DTLOG_CRIT=%.9ef",
-             s->ndates, s->win_az, s->win_rg, padded_cols, (int)s->test,
-             s->emi, s->bias, s->min_looks, s->ks_max, s->ad_norm,
-             s->ad_sigma, s->ad_crit, s->tlog_crit);
-    if (getenv("TCOH_EXTRA_BUILD_OPTIONS")) {
-        strncat(options, " ", sizeof(options) - strlen(options) - 1);
-        strncat(options, getenv("TCOH_EXTRA_BUILD_OPTIONS"),
-                sizeof(options) - strlen(options) - 1);
-    }
+             s->ndates, s->win_az, s->win_rg, padded_cols, (int)s->test, s->emi,
+             s->bias, s->min_looks, s->ks_max, s->ad_norm, s->ad_sigma,
+             s->ad_crit, s->tlog_crit);
     G_debug(1, "OpenCL build options: %s", options);
     err = clBuildProgram(o->program, 1, &o->device, options, NULL, NULL);
     if (err != CL_SUCCESS) {
@@ -239,11 +233,11 @@ struct ocl *ocl_open(int platform, int device, const struct settings *s,
         clGetProgramBuildInfo(o->program, o->device, CL_PROGRAM_BUILD_LOG, 0,
                               NULL, &len);
         log = G_malloc(len + 1);
-        clGetProgramBuildInfo(o->program, o->device, CL_PROGRAM_BUILD_LOG,
-                              len, log, NULL);
+        clGetProgramBuildInfo(o->program, o->device, CL_PROGRAM_BUILD_LOG, len,
+                              log, NULL);
         log[len] = '\0';
-        G_fatal_error(_("OpenCL kernel build failed (error %d):\n%s"),
-                      (int)err, log);
+        G_fatal_error(_("OpenCL kernel build failed (error %d):\n%s"), (int)err,
+                      log);
     }
     o->kernel = clCreateKernel(o->program, "temporal_coherence", &err);
     CHECK(err, "clCreateKernel");
@@ -339,8 +333,8 @@ void ocl_run(struct ocl *o, const float *slc, const float *amp,
 
             global[1] = chunk;
             t0 = now();
-            CHECK(clEnqueueNDRangeKernel(o->queue, o->kernel, 2, offset,
-                                         global, o->local, 0, NULL, NULL),
+            CHECK(clEnqueueNDRangeKernel(o->queue, o->kernel, 2, offset, global,
+                                         o->local, 0, NULL, NULL),
                   "clEnqueueNDRangeKernel");
             CHECK(clFinish(o->queue), "clFinish");
             dt = now() - t0;

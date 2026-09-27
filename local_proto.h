@@ -20,10 +20,10 @@ struct utc {
 /* One date of the stack: complex raster pair and its metadata. */
 struct epoch {
     char basename[GNAME_MAX];
-    char name[2][GNAME_MAX];   /* <basename>_i, <basename>_q */
+    char name[2][GNAME_MAX]; /* <basename>_i, <basename>_q */
     char mapset[2][GMAPSET_MAX];
     struct Cell_head head;
-    char *meta;                /* description.json text, NULL if absent */
+    char *meta; /* description.json text, NULL if absent */
     int has_time;
     struct utc start, end;
     double start_sec;
@@ -64,8 +64,8 @@ void ocl_list_devices(void);
 struct ocl *ocl_open(int platform, int device, const struct settings *s,
                      int padded_cols, size_t *max_alloc);
 void ocl_run(struct ocl *o, const float *slc, const float *amp,
-             const unsigned char *valid, int padded_rows, int rows,
-             int cols, float *coh, int *count);
+             const unsigned char *valid, int padded_rows, int rows, int cols,
+             float *coh, int *count);
 void ocl_close(struct ocl *o);
 
 #endif

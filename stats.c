@@ -31,8 +31,8 @@ static double ad_sigma(int na, int nb)
         for (j = i + 1; j <= total - 1; j++)
             g += 1.0 / ((double)(total - i) * j);
     a = (4 * g - 6) * (k - 1) + (10 - 6 * g) * big_h;
-    b = (2 * g - 4) * k * k + 8 * h * k + (2 * g - 14 * h - 4) * big_h -
-        8 * h + 4 * g - 6;
+    b = (2 * g - 4) * k * k + 8 * h * k + (2 * g - 14 * h - 4) * big_h - 8 * h +
+        4 * g - 6;
     c = (6 * h + 2 * g - 2) * k * k + (4 * h - 4 * g + 6) * k +
         (2 * h - 6) * big_h + 4 * h;
     d = (2 * h + 6) * k * k - 4 * h * k;
@@ -50,7 +50,7 @@ static double normal_quantile(double alpha)
     for (i = 0; i < 200; i++) {
         double mid = 0.5 * (lo + hi);
 
-        if (erfc(mid / M_SQRT2) > alpha)
+        if (erfc(mid / sqrt(2.0)) > alpha)
             lo = mid;
         else
             hi = mid;
@@ -65,8 +65,8 @@ void shp_constants(struct settings *s)
 
     /* Kolmogorov-Smirnov: D = d / n is accepted up to
        c(alpha) sqrt(2 / n), c(alpha) = sqrt(-ln(alpha / 2) / 2). */
-    s->ks_max = (int)floor(sqrt(-0.5 * log(s->alpha / 2.0)) *
-                           sqrt(2.0 / n) * n);
+    s->ks_max =
+        (int)floor(sqrt(-0.5 * log(s->alpha / 2.0)) * sqrt(2.0 / n) * n);
 
     /* Anderson-Darling: A2 = 1/N (1/n + 1/n) sum ..., N = 2n. */
     s->ad_norm = 1.0 / (2.0 * n) * (2.0 / n);

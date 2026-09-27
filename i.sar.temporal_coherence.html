@@ -9,7 +9,8 @@ N dates. Values range from 0 (random phases) to 1 (perfectly
 consistent), and the result is the standard mask for choosing which
 pixels to trust in an InSAR time series.</p>
 <p>The algorithm follows the <code>PhaseLinking</code> operator of the
-ESA SNAP microwave toolbox. For every pixel:</p>
+ESA SNAP microwave toolbox. It runs on an <strong>OpenCL</strong>
+device, preferably a GPU, one work-item per pixel. For every pixel:</p>
 <ol type="1">
 <li><strong>Statistically homogeneous pixels (SHPs)</strong> are
 selected in a search window of <strong>window</strong> lines × samples
@@ -41,12 +42,16 @@ pairs (Pepe and Lanari): <em>γ<sub>T</sub> = 2/(N(N−1))
 of its dates is NULL or has a zero sample (SLC no-data), or when it has
 fewer SHPs than <strong>min_shp</strong> (default 20). The minimum is
 never less than the number of dates, so that the covariance matrix has
-full rank. The optional <strong>shp_count</strong> map holds the number
-of SHPs of every pixel whose stack is valid, including those below
-<strong>min_shp</strong>; it helps to tune <strong>window</strong> and
-<strong>alpha</strong>.</p>
-<p>The result does not depend on a reference date nor on the order of
-the inputs.</p>
+full rank. With <strong>-b</strong>, a pixel is also NULL when the
+zeroed coherences split the dates into groups with no coherence between
+them: the relative phase of the groups, hence the temporal coherence, is
+then undefined. The optional <strong>shp_count</strong> map holds the
+number of SHPs of every pixel whose stack is valid, including those
+below <strong>min_shp</strong>; it helps to tune <strong>window</strong>
+and <strong>alpha</strong>.</p>
+<p>The phases are linked relative to the chronological median date, as
+the default reference epoch of SNAP. The result does not depend on the
+order of the inputs.</p>
 <h3 id="input-stack">Input stack</h3>
 <p>Each date is given by its basename: the raster maps
 <code>&lt;basename&gt;_i</code> and <code>&lt;basename&gt;_q</code>
@@ -87,20 +92,46 @@ robust default; <strong>estimator=emi</strong> is better on stacks with
 strong temporal decorrelation (vegetation, long time spans). The bias
 correction (<strong>-b</strong>) helps EVD with few looks but can
 degrade EMI.</p>
-<p>The module processes the region in strips of rows, bounded by
-<strong>memory</strong>, and splits each strip into blocks computed in
-parallel by <strong>nprocs</strong> threads. The cost grows with the
-window size and with the square of the number of dates: with 20 dates
-and the default window, count about 3500 pixels per second and per core.
-Restrict the region to the area of interest for large stacks.</p>
-<p>Two details differ from SNAP (microwave toolbox 2026): the
-Anderson-Darling statistic uses the 1/N normalization of Scholz and
-Stephens (1987) eq. 6, as <em>scipy.stats.anderson_ksamp</em>, where
-SNAP scales it by (N−1)/N; and a pair whose coherence is zeroed by the
-bias correction counts with phase 0 in <em>γ<sub>T</sub></em>. The
-critical value of the t-test is the normal quantile of
-<strong>alpha</strong>. Up to 255 dates are supported.</p>
-<p>The module requires NumPy.</p>
+<h3 id="opencl">OpenCL</h3>
+<p>The module reads the region in strips of rows bounded by
+<strong>memory</strong> and by the largest buffer of the device, and
+computes every strip on the OpenCL device. The kernel launches are split
+into chunks of rows lasting about half a second each, so that the GPU
+driver watchdog (e.g. the amdgpu lockup timeout) never resets a long
+computation.</p>
+<p>By default the first GPU of any OpenCL platform is used, else the
+first device (e.g. a CPU through PoCL, with a warning). The
+<strong>-l</strong> flag lists the platforms and devices with their
+indices, to be selected with <strong>platform</strong> and
+<strong>device</strong>. The kernel is compiled for the stack at run
+time (OpenCL C 1.1, e.g. Mesa Clover) and works in <strong>single
+precision</strong>: no double precision support is needed. The results
+agree with a double precision implementation to about
+10<sup>−5</sup>.</p>
+<p>The eigenvector is computed by Householder reduction of the Hermitian
+coherence matrix to a real tridiagonal one, bisection of the needed
+eigenvalue and inverse iteration. For EMI, |T| is inverted by Cholesky
+decomposition, or, when it is not safely positive definite, by the
+pseudo-inverse of its Jacobi eigendecomposition.</p>
+<p>The cost grows with the window size and with the cube of the number
+of dates. With 20 dates and the default window, an AMD Radeon Pro WX
+7100 (Mesa Clover) processes about 120 000 pixels per second, i.e. a
+sub-swath of three IW bursts (about 37 million pixels) in about five
+minutes. At most 64 dates are supported: every work-item keeps six N×N
+matrices in private memory.</p>
+<p>Some details differ from SNAP (microwave toolbox 2026), where it
+gives wrong or arbitrary values: the Anderson-Darling statistic uses the
+1/N normalization of Scholz and Stephens (1987) eq. 6, as
+<em>scipy.stats.anderson_ksamp</em>, where SNAP scales it by (N−1)/N; a
+pair whose coherence is zeroed by the bias correction counts with phase
+0 in <em>γ<sub>T</sub></em>; a date whose eigenvector component is
+negligible (below 10<sup>−3</sup> of the largest) takes the phase of the
+reference date; pixels with unlinked groups of dates are NULL (see
+above). The critical value of the t-test is the normal quantile of
+<strong>alpha</strong>.</p>
+<p>The module requires an OpenCL 1.1 driver (ICD) and its development
+files (e.g. Debian <code>ocl-icd-opencl-dev</code> and
+<code>mesa-opencl-icd</code> or <code>pocl-opencl-icd</code>).</p>
 <h2 id="examples">EXAMPLES</h2>
 <p>Import the same bursts of five dates over Sharjah (UAE), coregister
 them on the first one, then compute their temporal coherence:</p>
@@ -115,14 +146,18 @@ them on the first one, then compute their temporal coherence:</p>
 <span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a><span class="ex">g.region</span> raster=s1c_20230112_iw2_vv_i</span>
 <span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a><span class="ex">i.sar.temporal_coherence</span> <span class="dt">\</span></span>
 <span id="cb1-11"><a href="#cb1-11" aria-hidden="true" tabindex="-1"></a>    input=s1c_20230112_iw2_vv,s1c_20230124_iw2_vv,s1c_20230205_iw2_vv,s1c_20230217_iw2_vv,s1c_20230301_iw2_vv <span class="dt">\</span></span>
-<span id="cb1-12"><a href="#cb1-12" aria-hidden="true" tabindex="-1"></a>    output=tcoh_vv shp_count=nshp_vv nprocs=4</span>
+<span id="cb1-12"><a href="#cb1-12" aria-hidden="true" tabindex="-1"></a>    output=tcoh_vv shp_count=nshp_vv</span>
 <span id="cb1-13"><a href="#cb1-13" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb1-14"><a href="#cb1-14" aria-hidden="true" tabindex="-1"></a><span class="co"># Keep the reliable pixels.</span></span>
 <span id="cb1-15"><a href="#cb1-15" aria-hidden="true" tabindex="-1"></a><span class="ex">r.mapcalc</span> <span class="st">&quot;tcoh_mask = if(tcoh_vv &gt;= 0.7, 1, null())&quot;</span></span></code></pre></div>
+<p>List the OpenCL devices, then run on the second device of the first
+platform:</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="ex">i.sar.temporal_coherence</span> <span class="at">-l</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="ex">i.sar.temporal_coherence</span> input=... output=tcoh_vv platform=0 device=1</span></code></pre></div>
 <p>EMI estimation with an Anderson-Darling SHP test in a larger
 window:</p>
-<div class="sourceCode" id="cb2"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="ex">i.sar.temporal_coherence</span> input=... output=tcoh_emi <span class="dt">\</span></span>
-<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>    estimator=emi shp_test=ad alpha=0.01 window=31,9</span></code></pre></div>
+<div class="sourceCode" id="cb3"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="ex">i.sar.temporal_coherence</span> input=... output=tcoh_emi <span class="dt">\</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>    estimator=emi shp_test=ad alpha=0.01 window=31,9</span></code></pre></div>
 <h2 id="references">REFERENCES</h2>
 <ul>
 <li>Ferretti, A., Fumagalli, A., Novali, F., Prati, C., Rocca, F.,

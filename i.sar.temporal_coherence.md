@@ -11,7 +11,8 @@ result is the standard mask for choosing which pixels to trust in an
 InSAR time series.
 
 The algorithm follows the `PhaseLinking` operator of the ESA SNAP
-microwave toolbox. For every pixel:
+microwave toolbox. It runs on an **OpenCL** device, preferably a GPU,
+one work-item per pixel. For every pixel:
 
 1. **Statistically homogeneous pixels (SHPs)** are selected in a search
     window of **window** lines × samples (default 21×7) centred on the
@@ -39,13 +40,17 @@ microwave toolbox. For every pixel:
 A pixel is not estimated (NULL in **output**) when one of its dates is
 NULL or has a zero sample (SLC no-data), or when it has fewer SHPs than
 **min_shp** (default 20). The minimum is never less than the number of
-dates, so that the covariance matrix has full rank. The optional
+dates, so that the covariance matrix has full rank. With **-b**, a pixel
+is also NULL when the zeroed coherences split the dates into groups with
+no coherence between them: the relative phase of the groups, hence the
+temporal coherence, is then undefined. The optional
 **shp_count** map holds the number of SHPs of every pixel whose stack is
 valid, including those below **min_shp**; it helps to tune **window**
 and **alpha**.
 
-The result does not depend on a reference date nor on the order of the
-inputs.
+The phases are linked relative to the chronological median date, as
+the default reference epoch of SNAP. The result does not depend on the
+order of the inputs.
 
 ### Input stack
 
@@ -89,22 +94,48 @@ default; **estimator=emi** is better on stacks with strong temporal
 decorrelation (vegetation, long time spans). The bias correction (**-b**)
 helps EVD with few looks but can degrade EMI.
 
-The module processes the region in strips of rows, bounded by
-**memory**, and splits each strip into blocks computed in parallel by
-**nprocs** threads. The cost grows with the window size and with the
-square of the number of dates: with 20 dates and the default window,
-count about 3500 pixels per second and per core. Restrict the region to
-the area of interest for large stacks.
+### OpenCL
 
-Two details differ from SNAP (microwave toolbox 2026): the
-Anderson-Darling statistic uses the 1/N normalization of Scholz and
-Stephens (1987) eq. 6, as *scipy.stats.anderson_ksamp*, where SNAP
-scales it by (N−1)/N; and a pair whose coherence is zeroed by the bias
-correction counts with phase 0 in *γ<sub>T</sub>*. The critical value of
-the t-test is the normal quantile of **alpha**. Up to 255 dates are
-supported.
+The module reads the region in strips of rows bounded by **memory** and
+by the largest buffer of the device, and computes every strip on the
+OpenCL device. The kernel launches are split into chunks of rows lasting
+about half a second each, so that the GPU driver watchdog (e.g. the
+amdgpu lockup timeout) never resets a long computation.
 
-The module requires NumPy.
+By default the first GPU of any OpenCL platform is used, else the first
+device (e.g. a CPU through PoCL, with a warning). The **-l** flag lists
+the platforms and devices with their indices, to be selected with
+**platform** and **device**. The kernel is compiled for the stack at run
+time (OpenCL C 1.1, e.g. Mesa Clover) and works in **single precision**:
+no double precision support is needed. The results agree with a double
+precision implementation to about 10<sup>−5</sup>.
+
+The eigenvector is computed by Householder reduction of the Hermitian
+coherence matrix to a real tridiagonal one, bisection of the needed
+eigenvalue and inverse iteration. For EMI, |T| is inverted by Cholesky
+decomposition, or, when it is not safely positive definite, by the
+pseudo-inverse of its Jacobi eigendecomposition.
+
+The cost grows with the window size and with the cube of the number of
+dates. With 20 dates and the default window, an AMD Radeon Pro WX 7100
+(Mesa Clover) processes about 120 000 pixels per second, i.e. a
+sub-swath of three IW bursts (about 37 million pixels) in about five
+minutes. At most 64 dates are supported: every work-item keeps six
+N×N matrices in private memory.
+
+Some details differ from SNAP (microwave toolbox 2026), where it gives
+wrong or arbitrary values: the Anderson-Darling statistic uses the 1/N
+normalization of Scholz and Stephens (1987) eq. 6, as
+*scipy.stats.anderson_ksamp*, where SNAP scales it by (N−1)/N; a pair
+whose coherence is zeroed by the bias correction counts with phase 0 in
+*γ<sub>T</sub>*; a date whose eigenvector component is negligible (below
+10<sup>−3</sup> of the largest) takes the phase of the reference date;
+pixels with unlinked groups of dates are NULL (see above). The critical
+value of the t-test is the normal quantile of **alpha**.
+
+The module requires an OpenCL 1.1 driver (ICD) and its development
+files (e.g. Debian `ocl-icd-opencl-dev` and `mesa-opencl-icd` or
+`pocl-opencl-icd`).
 
 ## EXAMPLES
 
@@ -123,10 +154,18 @@ done
 g.region raster=s1c_20230112_iw2_vv_i
 i.sar.temporal_coherence \
     input=s1c_20230112_iw2_vv,s1c_20230124_iw2_vv,s1c_20230205_iw2_vv,s1c_20230217_iw2_vv,s1c_20230301_iw2_vv \
-    output=tcoh_vv shp_count=nshp_vv nprocs=4
+    output=tcoh_vv shp_count=nshp_vv
 
 # Keep the reliable pixels.
 r.mapcalc "tcoh_mask = if(tcoh_vv >= 0.7, 1, null())"
+```
+
+List the OpenCL devices, then run on the second device of the first
+platform:
+
+```sh
+i.sar.temporal_coherence -l
+i.sar.temporal_coherence input=... output=tcoh_vv platform=0 device=1
 ```
 
 EMI estimation with an Anderson-Darling SHP test in a larger window:

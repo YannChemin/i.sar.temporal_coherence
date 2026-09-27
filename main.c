@@ -199,8 +199,7 @@ static void write_metadata(const char *name, const struct settings *s,
             const struct utc *t = &epochs[i].start;
 
             snprintf(iso, sizeof(iso), "%04d-%02d-%02dT%02d:%02d:%09.6f",
-                     t->year, t->month, t->day, t->hour, t->minute,
-                     t->second);
+                     t->year, t->month, t->day, t->hour, t->minute, t->second);
             G_json_object_set_string(eo, "start_time", iso);
         }
         else
@@ -213,8 +212,7 @@ static void write_metadata(const char *name, const struct settings *s,
     G_json_object_set_value(obj, "epochs", list);
 
     G__make_mapset_element_misc("cell_misc", name);
-    G_file_name_misc(path, "cell_misc", "description.json", name,
-                     G_mapset());
+    G_file_name_misc(path, "cell_misc", "description.json", name, G_mapset());
     text = G_json_serialize_to_string_pretty(root);
     fp = fopen(path, "w");
     if (!fp)
@@ -257,8 +255,8 @@ int main(int argc, char *argv[])
 {
     struct GModule *module;
     struct {
-        struct Option *input, *output, *shp_count, *window, *shp_test,
-            *alpha, *min_shp, *estimator, *memory, *platform, *device;
+        struct Option *input, *output, *shp_count, *window, *shp_test, *alpha,
+            *min_shp, *estimator, *memory, *platform, *device;
     } opt;
     struct {
         struct Flag *bias, *list;
@@ -341,9 +339,8 @@ int main(int argc, char *argv[])
     opt.shp_test->answer = "ks";
     opt.shp_test->label = _("Two-sample test of the amplitude time series "
                             "used to select SHPs");
-    G_asprintf((char **)&opt.shp_test->descriptions,
-               "ks;%s;ad;%s;tlog;%s", _("Kolmogorov-Smirnov"),
-               _("Anderson-Darling (Scholz-Stephens)"),
+    G_asprintf((char **)&opt.shp_test->descriptions, "ks;%s;ad;%s;tlog;%s",
+               _("Kolmogorov-Smirnov"), _("Anderson-Darling (Scholz-Stephens)"),
                _("Welch t-test on log-amplitude"));
     opt.shp_test->guisection = _("Estimation");
 
@@ -428,8 +425,7 @@ int main(int argc, char *argv[])
         G_fatal_error(_("Option window needs two sizes azimuth,range"));
     s.win_az = atoi(opt.window->answers[0]);
     s.win_rg = atoi(opt.window->answers[1]);
-    if (s.win_az < 1 || s.win_rg < 1 || s.win_az % 2 == 0 ||
-        s.win_rg % 2 == 0)
+    if (s.win_az < 1 || s.win_rg < 1 || s.win_az % 2 == 0 || s.win_rg % 2 == 0)
         G_fatal_error(_("Window sizes must be odd, got %d,%d"), s.win_az,
                       s.win_rg);
     s.alpha = atof(opt.alpha->answer);
@@ -559,9 +555,8 @@ int main(int argc, char *argv[])
     /* Support files and metadata. */
     swath = epoch_attribute(&epochs[0], "swath.swath");
     pol = epoch_attribute(&epochs[0], "swath.polarization");
-    snprintf(stack_label, sizeof(stack_label), "%s%s%s%s",
-             swath ? swath : "", swath ? " " : "", pol ? pol : "",
-             pol ? " " : "");
+    snprintf(stack_label, sizeof(stack_label), "%s%s%s%s", swath ? swath : "",
+             swath ? " " : "", pol ? pol : "", pol ? " " : "");
     {
         size_t len = 1;
 
@@ -615,7 +610,6 @@ int main(int argc, char *argv[])
     }
 
     G_message(_("Temporal coherence <%s>: %ld pixels estimated, mean %.3f"),
-              opt.output->answer, estimated,
-              estimated ? sum / estimated : NAN);
+              opt.output->answer, estimated, estimated ? sum / estimated : NAN);
     exit(EXIT_SUCCESS);
 }

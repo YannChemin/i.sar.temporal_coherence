@@ -3,13 +3,14 @@
 A [GRASS GIS](https://grass.osgeo.org/) addon that computes the
 **phase-linking temporal coherence** of a coregistered stack of SAR
 Single Look Complex (SLC) images, such as Sentinel-1 IW/EW SLC imported
-by [r.in.s1slc](https://github.com/YannChemin/r.in.s1slc).
+by [r.in.s1slc](https://github.com/YannChemin/r.in.s1slc), on a GPU with
+**OpenCL** (C module, single precision kernel).
 
 ```sh
 g.region raster=s1c_20230112_iw2_vv_i
 i.sar.temporal_coherence \
     input=s1c_20230112_iw2_vv,s1c_20230124_iw2_vv,s1c_20230205_iw2_vv \
-    output=tcoh_vv shp_count=nshp_vv nprocs=4
+    output=tcoh_vv shp_count=nshp_vv
 ```
 
 ## Why
@@ -35,8 +36,20 @@ For every pixel, following the ESA SNAP `PhaseLinking` operator:
    γ = 2/(N(N−1)) |Σ<sub>i<j</sub> exp(j(arg T<sub>ij</sub> − (φ<sub>i</sub> − φ<sub>j</sub>)))|.
 
 Pixels with a NULL or zero sample at any date, or fewer than
-`min_shp` (≥ N) SHPs, are NULL. The computation is vectorized with
-NumPy, bounded by `memory` and parallelized over `nprocs` threads.
+`min_shp` (≥ N) SHPs, are NULL.
+
+## OpenCL
+
+One work-item per pixel runs the whole chain; the eigenvector comes from
+a Householder tridiagonal reduction, bisection and inverse iteration
+(Cholesky inverse of |T| for EMI). The kernel needs OpenCL C 1.1 and no
+double precision, so it runs on Mesa Clover. `-l` lists the devices,
+`platform=`/`device=` pick one (default: first GPU). Launches are split
+into ~0.5 s chunks to stay clear of GPU watchdogs.
+
+With 20 dates and the default window, an AMD Radeon Pro WX 7100 (Mesa
+Clover) processes about 120 000 pixels/s: a three-burst IW sub-swath
+(~37 M pixels) in about five minutes.
 
 ## Input
 
@@ -50,7 +63,9 @@ relative orbit, calibration or duplicate dates.
 ## Requirements
 
 - GRASS GIS 8.4 or later
-- Python 3 with NumPy
+- An OpenCL 1.1 driver (ICD) and headers, e.g. Debian `ocl-icd-opencl-dev`
+  with `mesa-opencl-icd` (AMD) or `pocl-opencl-icd` (CPU)
+- For the tests: Python 3 with NumPy and pytest (SciPy optional)
 
 ## Installation
 
@@ -66,13 +81,18 @@ make MODULE_TOPDIR=$HOME/dev/grass
 
 ## Tests
 
-The tests compare the module, pixel by pixel, with a plain-loop
-transcription of the SNAP algorithm on synthetic distributed-scatterer
-stacks, check the SHP statistics against SciPy, and cover NULL handling,
-region subsets, strip and block seams, metadata and failure modes.
+The tests compare the module, pixel by pixel, with a double precision
+plain-loop transcription of the SNAP algorithm on synthetic
+distributed-scatterer stacks (agreement within 10⁻⁴), check the SHP
+statistics against SciPy, and cover NULL handling, region subsets, strip
+seams, metadata and failure modes. Run them with the GRASS the module was
+built in, so that it is on the `PATH` (or set `I_SAR_TEMPORAL_COHERENCE`
+to the binary):
 
 ```sh
-grass --tmp-project XY --exec python3 -m pytest tests
+make MODULE_TOPDIR=$HOME/dev/grass
+$HOME/dev/grass/bin.x86_64-pc-linux-gnu/grass --tmp-project XY \
+    --exec python3 -m pytest tests
 ```
 
 ## References
