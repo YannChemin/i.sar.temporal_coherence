@@ -46,10 +46,13 @@ static int compare_epochs(const void *pa, const void *pb)
 
 /* Read region rows row0..row0+strip->padded_rows-1 (possibly outside the
    region, then invalid) into the padded strip, halo_cols invalid columns on
-   each side. */
+   each side. With geo, the flat-earth and topographic phase is removed from
+   every date, at the height of the elevation map (fd_elev >= 0; a null
+   height makes the pixel invalid) or at the constant height geo->h0. */
 static void read_strip(struct strip *st, int (*fd)[2], int n, int row0,
                        int nrows, int ncols, int halo_cols, FCELL *buf_i,
-                       FCELL *buf_q)
+                       FCELL *buf_q, const struct geometry *geo, int fd_elev,
+                       DCELL *buf_h, double *phase)
 {
     const size_t npad = (size_t)st->padded_rows * st->padded_cols;
     int r, c, k;
@@ -81,15 +84,20 @@ static void read_strip(struct strip *st, int (*fd)[2], int n, int row0,
                 s[1] = buf_q[c];
             }
         }
-        /* Amplitudes of the valid pixels, sorted by insertion. */
+        if (fd_elev >= 0)
+            Rast_get_d_row(fd_elev, buf_h, row);
         for (c = 0; c < ncols; c++) {
             size_t pix = base + c;
             float *a = st->amp + pix * n;
 
+            if (fd_elev >= 0 && Rast_is_d_null_value(&buf_h[c]))
+                st->valid[pix] = 0;
             if (!st->valid[pix]) {
                 memset(st->slc + pix * n * 2, 0, n * 2 * sizeof(float));
                 continue;
             }
+            /* Amplitudes, sorted by insertion, before the phase rotation that
+               leaves them unchanged but for rounding. */
             for (k = 0; k < n; k++) {
                 const float *s = st->slc + (pix * n + k) * 2;
                 float v = sqrtf(s[0] * s[0] + s[1] * s[1]);
@@ -100,6 +108,19 @@ static void read_strip(struct strip *st, int (*fd)[2], int n, int row0,
                     j--;
                 }
                 a[j] = v;
+            }
+            /* Remove the geometric phase: date k times exp(i phase_k). */
+            if (geo) {
+                geometry_phases(geo, row, c, fd_elev >= 0 ? buf_h[c] : geo->h0,
+                                phase);
+                for (k = 0; k < n; k++) {
+                    float *s = st->slc + (pix * n + k) * 2;
+                    const double cs = cos(phase[k]), sn = sin(phase[k]);
+                    const double re = s[0], im = s[1];
+
+                    s[0] = (float)(re * cs - im * sn);
+                    s[1] = (float)(re * sn + im * cs);
+                }
             }
         }
     }
@@ -163,8 +184,13 @@ static void write_metadata(const char *name, const struct settings *s,
     G_json_object_set_number(po, "window_range", s->win_rg);
     G_json_object_set_number(po, "min_shp", s->min_looks);
     G_json_object_set_boolean(po, "bias_correction", s->bias);
-    G_json_object_set_number(po, "dates", n);
+    G_json_object_set_number(po, "dates", s->ndates);
     G_json_object_set_string(po, "precision", "single");
+    G_json_object_set_string(po, "phase_reference", s->phase_reference);
+    if (s->orbit)
+        G_json_object_set_string(po, "orbit", s->orbit);
+    else
+        G_json_object_set_null(po, "orbit");
     G_json_object_set_value(obj, "temporal_coherence", params);
 
     stack = G_json_value_init_object();
@@ -223,6 +249,29 @@ static void write_metadata(const char *name, const struct settings *s,
     G_json_value_free(root);
 }
 
+static void grey_colors(const char *name)
+{
+    struct Colors colors;
+    DCELL v0 = 0.0, v1 = 1.0;
+
+    Rast_init_colors(&colors);
+    Rast_add_d_color_rule(&v0, 0, 0, 0, &v1, 255, 255, 255, &colors);
+    Rast_write_colors(name, G_mapset(), &colors);
+}
+
+/* Compact date of an epoch for map names, YYYYMMDD or YYYYMMDDTHHMMSS. */
+static void date_tag(const struct epoch *e, int with_time, char *buf,
+                     size_t len)
+{
+    const struct utc *t = &e->start;
+
+    if (with_time)
+        snprintf(buf, len, "%04d%02d%02dT%02d%02d%02d", t->year, t->month,
+                 t->day, t->hour, t->minute, (int)t->second);
+    else
+        snprintf(buf, len, "%04d%02d%02d", t->year, t->month, t->day);
+}
+
 static void write_support(const char *name, const char *title,
                           const char *units, const char *label,
                           const char *sources, const char *description,
@@ -255,28 +304,32 @@ int main(int argc, char *argv[])
 {
     struct GModule *module;
     struct {
-        struct Option *input, *output, *shp_count, *window, *shp_test, *alpha,
-            *min_shp, *estimator, *memory, *platform, *device;
+        struct Option *input, *output, *shp_count, *pairs, *pairs_mode, *window,
+            *shp_test, *alpha, *min_shp, *estimator, *reference, *elevation,
+            *orbit, *orbit_dir, *memory, *platform, *device;
     } opt;
     struct {
-        struct Flag *bias, *list;
+        struct Flag *bias, *flat, *list;
     } flag;
     struct settings s;
     struct epoch *epochs;
     struct Cell_head region;
     struct strip st;
     struct ocl *o;
-    int n, i, k, nrows, ncols, halo_az, halo_rg, strip_rows, row0, fd_out,
-        fd_shp = -1, (*fd)[2];
+    struct geometry geo, *geop = NULL;
+    int n, i, j, k, p, nrows, ncols, halo_az, halo_rg, strip_rows, row0, fd_out,
+        fd_shp = -1, fd_elev = -1, ref = -1, (*fd)[2], *fd_pairs = NULL,
+        (*pair_dates)[2] = NULL;
     size_t max_alloc, per_row, budget;
     FCELL *buf_i, *buf_q, *out_row;
+    DCELL *buf_h = NULL;
     CELL *shp_row;
-    float *coh;
+    float *coh, *pairs = NULL;
     int *count;
-    double sum = 0.0;
+    double sum = 0.0, *phase;
     long estimated = 0;
-    char *pol, *swath, title[256], label[128], stack_label[64], *sources,
-        description[1024];
+    char *pol, *swath, title[512], label[128], stack_label[64], *sources,
+        description[1024], **pair_names = NULL;
 
     G_gisinit(argv[0]);
 
@@ -318,6 +371,26 @@ int main(int argc, char *argv[])
     opt.shp_count->description = _("Written for every pixel whose stack is "
                                    "valid, also below min_shp");
     opt.shp_count->guisection = _("Output");
+
+    opt.pairs = G_define_standard_option(G_OPT_R_BASENAME_OUTPUT);
+    opt.pairs->key = "pairs";
+    opt.pairs->required = NO;
+    opt.pairs->label = _("Basename for output pair coherence raster maps");
+    opt.pairs->description = _("One map <basename>_<date1>_<date2> of |T_ij| "
+                               "per pair of dates");
+    opt.pairs->guisection = _("Output");
+
+    opt.pairs_mode = G_define_option();
+    opt.pairs_mode->key = "pairs_mode";
+    opt.pairs_mode->type = TYPE_STRING;
+    opt.pairs_mode->required = NO;
+    opt.pairs_mode->options = "consecutive,all";
+    opt.pairs_mode->answer = "consecutive";
+    opt.pairs_mode->label = _("Pairs of dates written with option pairs");
+    G_asprintf((char **)&opt.pairs_mode->descriptions, "consecutive;%s;all;%s",
+               _("Each date with the next one (N - 1 maps)"),
+               _("Every pair of dates (N (N - 1) / 2 maps)"));
+    opt.pairs_mode->guisection = _("Output");
 
     opt.window = G_define_option();
     opt.window->key = "window";
@@ -376,6 +449,51 @@ int main(int argc, char *argv[])
                  "al. 2018)"));
     opt.estimator->guisection = _("Estimation");
 
+    opt.reference = G_define_option();
+    opt.reference->key = "reference";
+    opt.reference->type = TYPE_STRING;
+    opt.reference->required = NO;
+    opt.reference->key_desc = "basename";
+    opt.reference->label = _("Input date the stack is coregistered on");
+    opt.reference->description = _("Its grid timing and orbit define the "
+                                   "geometry; required with -f or "
+                                   "elevation");
+    opt.reference->guisection = _("Geometry");
+
+    opt.elevation = G_define_standard_option(G_OPT_R_ELEV);
+    opt.elevation->required = NO;
+    opt.elevation->label = _("Name of the elevation raster map in radar "
+                             "geometry, on the grid of the stack");
+    opt.elevation->description = _("Heights in meters above the WGS84 "
+                                   "ellipsoid; removes the topographic "
+                                   "phase (implies -f)");
+    opt.elevation->guisection = _("Geometry");
+
+    opt.orbit = G_define_option();
+    opt.orbit->key = "orbit";
+    opt.orbit->type = TYPE_STRING;
+    opt.orbit->required = NO;
+    opt.orbit->options = "precise,restituted,annotation";
+    opt.orbit->answer = "precise";
+    opt.orbit->label = _("Orbits used for the flat-earth and topographic "
+                         "phase");
+    G_asprintf((char **)&opt.orbit->descriptions,
+               "precise;%s;restituted;%s;annotation;%s",
+               _("Precise orbit files (POEORB, about 5 cm), downloaded if "
+                 "needed"),
+               _("Restituted orbit files (RESORB), downloaded if needed"),
+               _("State vectors of the product annotation"));
+    opt.orbit->guisection = _("Geometry");
+
+    opt.orbit_dir = G_define_standard_option(G_OPT_M_DIR);
+    opt.orbit_dir->key = "orbit_dir";
+    opt.orbit_dir->required = NO;
+    opt.orbit_dir->label = _("Directory of the orbit files");
+    opt.orbit_dir->description = _("Searched first, downloaded files are "
+                                   "stored in it (default: "
+                                   "$HOME/.grass8/sentinel1_orbits)");
+    opt.orbit_dir->guisection = _("Geometry");
+
     opt.memory = G_define_standard_option(G_OPT_MEMORYMB);
 
     opt.platform = G_define_option();
@@ -402,6 +520,13 @@ int main(int argc, char *argv[])
     flag.bias->description = _("First-order correction for the number of "
                                "looks; recommended with estimator=evd only");
     flag.bias->guisection = _("Estimation");
+
+    flag.flat = G_define_flag();
+    flag.flat->key = 'f';
+    flag.flat->label = _("Remove the flat-earth phase");
+    flag.flat->description = _("From the orbits, at the annotated terrain "
+                               "height; use elevation to follow the relief");
+    flag.flat->guisection = _("Geometry");
 
     flag.list = G_define_flag();
     flag.list->key = 'l';
@@ -436,6 +561,10 @@ int main(int argc, char *argv[])
                                                      : SHP_KS;
     s.emi = !strcmp(opt.estimator->answer, "emi");
     s.bias = flag.bias->answer;
+    s.phase_reference = opt.elevation->answer ? "elevation"
+                        : flag.flat->answer   ? "ellipsoid"
+                                              : "none";
+    s.orbit = NULL;
 
     /* Inputs, sorted chronologically. */
     for (n = 0; opt.input->answers[n]; n++)
@@ -454,6 +583,59 @@ int main(int argc, char *argv[])
                         "needed"),
                       s.win_az, s.win_rg, s.min_looks);
     shp_constants(&s);
+    if (opt.reference->answer) {
+        for (i = 0; i < n; i++)
+            if (!strcmp(epochs[i].basename, opt.reference->answer))
+                ref = i;
+        if (ref < 0)
+            G_fatal_error(_("Reference <%s> is not one of the inputs"),
+                          opt.reference->answer);
+    }
+
+    /* Pairs of dates to write, named after their dates. */
+    s.pairs_all = !strcmp(opt.pairs_mode->answer, "all");
+    s.npairs = 0;
+    if (opt.pairs->answer) {
+        int dated = 1, with_time = 0;
+
+        s.npairs = s.pairs_all ? n * (n - 1) / 2 : n - 1;
+        pair_dates = G_malloc(s.npairs * sizeof(*pair_dates));
+        pair_names = G_malloc(s.npairs * sizeof(char *));
+        for (i = 0, p = 0; i < n - 1; i++)
+            for (j = i + 1; j < (s.pairs_all ? n : i + 2); j++, p++) {
+                pair_dates[p][0] = i;
+                pair_dates[p][1] = j;
+            }
+        for (i = 0; i < n; i++) {
+            dated &= epochs[i].has_time;
+            if (i > 0 && dated &&
+                epochs[i].start.year == epochs[i - 1].start.year &&
+                epochs[i].start.month == epochs[i - 1].start.month &&
+                epochs[i].start.day == epochs[i - 1].start.day)
+                with_time = 1;
+        }
+        for (p = 0; p < s.npairs; p++) {
+            char a[32], b[32];
+
+            if (dated) {
+                date_tag(&epochs[pair_dates[p][0]], with_time, a, sizeof(a));
+                date_tag(&epochs[pair_dates[p][1]], with_time, b, sizeof(b));
+            }
+            else {
+                snprintf(a, sizeof(a), "%d", pair_dates[p][0] + 1);
+                snprintf(b, sizeof(b), "%d", pair_dates[p][1] + 1);
+            }
+            G_asprintf(&pair_names[p], "%s_%s_%s", opt.pairs->answer, a, b);
+            if (G_legal_filename(pair_names[p]) < 0)
+                G_fatal_error(_("<%s> is an illegal file name"), pair_names[p]);
+            if (!G_get_overwrite() && G_find_raster2(pair_names[p], G_mapset()))
+                G_fatal_error(_("Raster map <%s> already exists"),
+                              pair_names[p]);
+        }
+        if (!dated)
+            G_warning(_("Some inputs have no acquisition time: pair maps are "
+                        "named by chronological rank"));
+    }
 
     G_get_window(&region);
     check_region(&epochs[0], &region);
@@ -463,13 +645,76 @@ int main(int argc, char *argv[])
     halo_rg = s.win_rg / 2;
     st.padded_cols = ncols + 2 * halo_rg;
 
+    /* Flat-earth and topographic phase from the orbits. */
+    if (flag.flat->answer || opt.elevation->answer) {
+        struct orbit *orbits = G_malloc(n * sizeof(*orbits));
+        double hmin, hmax, h0;
+        char cache[GPATH_MAX];
+
+        if (ref < 0)
+            G_fatal_error(_("Option reference is required to remove the "
+                            "flat-earth and topographic phase"));
+        if (opt.orbit_dir->answer)
+            G_strlcpy(cache, opt.orbit_dir->answer, sizeof(cache));
+        else
+            snprintf(cache, sizeof(cache), "%s/sentinel1_orbits",
+                     G_config_path());
+        for (i = 0; i < n; i++) {
+            if (!strcmp(opt.orbit->answer, "annotation"))
+                orbit_from_annotation(&epochs[i], &orbits[i]);
+            else
+                orbit_from_file(
+                    &epochs[i],
+                    !strcmp(opt.orbit->answer, "precise") ? "POEORB" : "RESORB",
+                    cache, &orbits[i]);
+        }
+        s.orbit = opt.orbit->answer;
+
+        h0 = epochs[ref].meta
+                 ? json_get_number(epochs[ref].meta, "swath.terrain_height")
+                 : NAN;
+        if (isnan(h0))
+            h0 = 0.0;
+        hmin = hmax = h0;
+        if (opt.elevation->answer) {
+            const char *mapset = G_find_raster2(opt.elevation->answer, "");
+            struct FPRange range;
+            DCELL lo, hi;
+
+            if (!mapset)
+                G_fatal_error(_("Raster map <%s> not found"),
+                              opt.elevation->answer);
+            if (Rast_read_fp_range(opt.elevation->answer, mapset, &range) < 0)
+                G_fatal_error(_("Unable to read the range of <%s>"),
+                              opt.elevation->answer);
+            Rast_get_fp_range_min_max(&range, &lo, &hi);
+            if (Rast_is_d_null_value(&lo))
+                G_fatal_error(_("Raster map <%s> has no data"),
+                              opt.elevation->answer);
+            hmin = lo;
+            hmax = hi;
+            fd_elev = Rast_open_old(opt.elevation->answer, mapset);
+            buf_h = Rast_allocate_d_buf();
+        }
+        geometry_init(&geo, epochs, n, ref, orbits, &region, hmin, hmax, h0);
+        geop = &geo;
+        for (i = 0; i < n; i++)
+            orbit_free(&orbits[i]);
+        G_free(orbits);
+    }
+    else if (opt.reference->answer)
+        G_warning(_("Option reference is only used with -f or elevation"));
+    phase = G_malloc(n * sizeof(double));
+
     o = ocl_open(opt.platform->answer ? atoi(opt.platform->answer) : -1,
                  opt.device->answer ? atoi(opt.device->answer) : -1, &s,
                  st.padded_cols, &max_alloc);
 
-    /* Strip height: the host strip (slc, amp, valid) within the memory
-       budget, the complex buffer within the device allocation limit. */
-    per_row = (size_t)st.padded_cols * (12 * n + 1);
+    /* Strip height: the host strip (slc, amp, valid) and the outputs within
+       the memory budget, the largest device buffer within the allocation
+       limit. */
+    per_row = (size_t)st.padded_cols * (12 * n + 1) +
+              (size_t)ncols * 4 * (2 + s.npairs);
     budget = (size_t)atoi(opt.memory->answer) * 1024 * 1024;
     strip_rows = (int)(budget / per_row) - (s.win_az - 1);
     if (max_alloc > 0) {
@@ -478,6 +723,11 @@ int main(int argc, char *argv[])
 
         if (dev_rows < strip_rows)
             strip_rows = dev_rows;
+        if (s.npairs) {
+            dev_rows = (int)(max_alloc / ((size_t)ncols * s.npairs * 4));
+            if (dev_rows < strip_rows)
+                strip_rows = dev_rows;
+        }
     }
     if (strip_rows < 1)
         G_fatal_error(_("Not enough memory for one row of %d columns and %d "
@@ -495,6 +745,8 @@ int main(int argc, char *argv[])
     st.valid = G_malloc((size_t)st.padded_rows * st.padded_cols);
     coh = G_malloc((size_t)strip_rows * ncols * sizeof(float));
     count = G_malloc((size_t)strip_rows * ncols * sizeof(int));
+    if (s.npairs)
+        pairs = G_malloc((size_t)s.npairs * strip_rows * ncols * sizeof(float));
     buf_i = Rast_allocate_f_buf();
     buf_q = Rast_allocate_f_buf();
     out_row = Rast_allocate_f_buf();
@@ -507,20 +759,26 @@ int main(int argc, char *argv[])
     fd_out = Rast_open_new(opt.output->answer, FCELL_TYPE);
     if (opt.shp_count->answer)
         fd_shp = Rast_open_new(opt.shp_count->answer, CELL_TYPE);
+    if (s.npairs) {
+        fd_pairs = G_malloc(s.npairs * sizeof(int));
+        for (p = 0; p < s.npairs; p++)
+            fd_pairs[p] = Rast_open_new(pair_names[p], FCELL_TYPE);
+    }
 
     G_message(_("Estimating the temporal coherence of %d dates (%d rows x %d "
                 "columns)..."),
               n, nrows, ncols);
     for (row0 = 0; row0 < nrows; row0 += strip_rows) {
         const int rows = row0 + strip_rows <= nrows ? strip_rows : nrows - row0;
+        const size_t plane = (size_t)rows * ncols;
         int r, c;
 
         G_percent(row0, nrows, 2);
         st.padded_rows = rows + 2 * halo_az;
         read_strip(&st, fd, n, row0 - halo_az, nrows, ncols, halo_rg, buf_i,
-                   buf_q);
+                   buf_q, geop, fd_elev, buf_h, phase);
         ocl_run(o, st.slc, st.amp, st.valid, st.padded_rows, rows, ncols, coh,
-                count);
+                count, pairs);
         for (r = 0; r < rows; r++) {
             for (c = 0; c < ncols; c++) {
                 const float v = coh[(size_t)r * ncols + c];
@@ -541,6 +799,17 @@ int main(int argc, char *argv[])
             Rast_put_f_row(fd_out, out_row);
             if (fd_shp >= 0)
                 Rast_put_c_row(fd_shp, shp_row);
+            for (p = 0; p < s.npairs; p++) {
+                const float *src = pairs + p * plane + (size_t)r * ncols;
+
+                for (c = 0; c < ncols; c++) {
+                    if (isnan(src[c]))
+                        Rast_set_f_null_value(&out_row[c], 1);
+                    else
+                        out_row[c] = src[c];
+                }
+                Rast_put_f_row(fd_pairs[p], out_row);
+            }
         }
     }
     G_percent(1, 1, 1);
@@ -548,9 +817,15 @@ int main(int argc, char *argv[])
     for (i = 0; i < n; i++)
         for (k = 0; k < 2; k++)
             Rast_close(fd[i][k]);
+    if (fd_elev >= 0)
+        Rast_close(fd_elev);
     Rast_close(fd_out);
     if (fd_shp >= 0)
         Rast_close(fd_shp);
+    for (p = 0; p < s.npairs; p++)
+        Rast_close(fd_pairs[p]);
+    if (geop)
+        geometry_free(geop);
 
     /* Support files and metadata. */
     swath = epoch_attribute(&epochs[0], "swath.swath");
@@ -569,12 +844,20 @@ int main(int argc, char *argv[])
             strcat(sources, epochs[i].basename);
         }
     }
-    snprintf(description, sizeof(description),
-             "%d dates, %s estimator, %s SHP test (alpha %g), %dx%d "
-             "window%s, OpenCL single precision",
-             n, s.emi ? "EMI" : "EVD",
-             s.test == SHP_AD ? "AD" : (s.test == SHP_TLOG ? "TLOG" : "KS"),
-             s.alpha, s.win_az, s.win_rg, s.bias ? ", bias corrected" : "");
+    snprintf(
+        description, sizeof(description),
+        "%d dates, %s estimator, %s SHP test (alpha %g), %dx%d "
+        "window%s%s%s%s, OpenCL single precision",
+        n, s.emi ? "EMI" : "EVD",
+        s.test == SHP_AD ? "AD" : (s.test == SHP_TLOG ? "TLOG" : "KS"), s.alpha,
+        s.win_az, s.win_rg, s.bias ? ", bias corrected" : "",
+        !strcmp(s.phase_reference, "elevation") ? ", topographic phase removed"
+        : !strcmp(s.phase_reference, "ellipsoid") ? ", flat-earth phase removed"
+                                                  : "",
+        s.orbit ? " with " : "", s.orbit ? s.orbit : "");
+    if (s.orbit)
+        strncat(description, " orbits",
+                sizeof(description) - strlen(description) - 1);
 
     snprintf(title, sizeof(title),
              "Temporal coherence of the %d-date %sSLC stack", n, stack_label);
@@ -586,14 +869,7 @@ int main(int argc, char *argv[])
                   epochs, n);
     write_metadata(opt.output->answer, &s, opt.shp_test->answer,
                    opt.estimator->answer, epochs, n);
-    {
-        struct Colors colors;
-        DCELL v0 = 0.0, v1 = 1.0;
-
-        Rast_init_colors(&colors);
-        Rast_add_d_color_rule(&v0, 0, 0, 0, &v1, 255, 255, 255, &colors);
-        Rast_write_colors(opt.output->answer, G_mapset(), &colors);
-    }
+    grey_colors(opt.output->answer);
     if (opt.shp_count->answer) {
         snprintf(title, sizeof(title),
                  "Number of statistically homogeneous pixels of the %d-date "
@@ -608,8 +884,33 @@ int main(int argc, char *argv[])
         write_metadata(opt.shp_count->answer, &s, opt.shp_test->answer,
                        opt.estimator->answer, epochs, n);
     }
+    for (p = 0; p < s.npairs; p++) {
+        struct epoch pair[2];
+        char pair_sources[2 * GNAME_MAX + 2];
+
+        pair[0] = epochs[pair_dates[p][0]];
+        pair[1] = epochs[pair_dates[p][1]];
+        snprintf(title, sizeof(title),
+                 "Coherence of the %sSLC pair %s, %s (SHPs of the %d-date "
+                 "stack)",
+                 stack_label, pair[0].basename, pair[1].basename, n);
+        if (pol)
+            snprintf(label, sizeof(label), "S1_%s_COHERENCE", pol);
+        else
+            G_strlcpy(label, "COHERENCE", sizeof(label));
+        snprintf(pair_sources, sizeof(pair_sources), "%s,%s", pair[0].basename,
+                 pair[1].basename);
+        write_support(pair_names[p], title, "", label, pair_sources,
+                      description, pair, 2);
+        write_metadata(pair_names[p], &s, opt.shp_test->answer,
+                       opt.estimator->answer, pair, 2);
+        grey_colors(pair_names[p]);
+    }
 
     G_message(_("Temporal coherence <%s>: %ld pixels estimated, mean %.3f"),
               opt.output->answer, estimated, estimated ? sum / estimated : NAN);
+    if (s.npairs)
+        G_message(_("%d pair coherence maps <%s_*>"), s.npairs,
+                  opt.pairs->answer);
     exit(EXIT_SUCCESS);
 }

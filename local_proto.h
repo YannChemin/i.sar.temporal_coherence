@@ -43,6 +43,27 @@ struct settings {
     double tlog_crit;
     int npairs;    /* pair coherence maps to write, 0 for none */
     int pairs_all; /* all pairs i < j instead of consecutive ones */
+    const char *phase_reference; /* none, ellipsoid or elevation */
+    const char *orbit;           /* orbit source, NULL without phase */
+};
+
+/* Orbit state vectors, times in seconds since 1970 (UTC). */
+struct orbit {
+    int n;
+    double *t;
+    double (*pos)[3], (*vel)[3];
+    char source[32];
+};
+
+/* Flat-earth and topographic phase of every date relative to the
+   reference date, on a coarse grid of the region, per height level. */
+struct geometry {
+    int ndates;
+    int grid_rows, grid_cols, step;
+    int nheights;
+    double heights[3];
+    double *phase; /* [node][height][date] */
+    double h0;     /* height used without elevation map */
 };
 
 /* epoch.c */
@@ -61,6 +82,22 @@ char *read_text_file(const char *path);
 
 /* stats.c */
 void shp_constants(struct settings *s);
+
+/* orbit.c */
+void orbit_from_annotation(const struct epoch *e, struct orbit *o);
+void orbit_from_file(const struct epoch *e, const char *kind,
+                     const char *cache_dir, struct orbit *o);
+void orbit_state(const struct orbit *o, double t, double *pos, double *vel);
+void orbit_free(struct orbit *o);
+
+/* geometry.c */
+void geometry_init(struct geometry *g, const struct epoch *epochs, int n,
+                   int ref, const struct orbit *orbits,
+                   const struct Cell_head *region, double hmin, double hmax,
+                   double h0);
+void geometry_phases(const struct geometry *g, int row, int col, double h,
+                     double *phase);
+void geometry_free(struct geometry *g);
 
 /* ocl.c */
 struct ocl;

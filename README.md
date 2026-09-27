@@ -38,6 +38,24 @@ For every pixel, following the ESA SNAP `PhaseLinking` operator:
 Pixels with a NULL or zero sample at any date, or fewer than
 `min_shp` (≥ N) SHPs, are NULL.
 
+## Pair coherence
+
+`pairs=<basename>` also writes the coherence of each pair of consecutive
+dates (`pairs_mode=all`: every pair), `<basename>_<date1>_<date2>`,
+estimated over the same adaptive SHP windows. A drop in the series dates
+a change of the surface, e.g. the harvest of a field.
+
+## Flat-earth and topographic phase, orbits
+
+`-f` removes the flat-earth phase and `elevation=` (heights in radar
+geometry on the stack grid) the topographic phase, computed from the
+orbits by range-Doppler geometry on the grid of the coregistration
+`reference=` date, as SNAP does for its interferograms. Otherwise these
+fringes lower the coherence estimated over the window. Orbits are the
+precise POEORB files by default (`orbit=precise|restituted|annotation`),
+downloaded through GDAL from the ESA STEP mirror used by SNAP and cached
+in `orbit_dir` (`~/.grass8/sentinel1_orbits`).
+
 ## OpenCL
 
 One work-item per pixel runs the whole chain; the eigenvector comes from
@@ -63,6 +81,7 @@ relative orbit, calibration or duplicate dates.
 ## Requirements
 
 - GRASS GIS 8.4 or later
+- GDAL (for the orbit downloads)
 - An OpenCL 1.1 driver (ICD) and headers, e.g. Debian `ocl-icd-opencl-dev`
   with `mesa-opencl-icd` (AMD) or `pocl-opencl-icd` (CPU)
 - For the tests: Python 3 with NumPy and pytest (SciPy optional)

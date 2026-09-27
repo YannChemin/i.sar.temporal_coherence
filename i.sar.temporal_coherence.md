@@ -75,14 +75,74 @@ is counted in pixels: run `g.region raster=<basename>_i` first, then
 optionally zoom to the area of interest. The search window is cut at the
 region edges.
 
+### Pair coherence
+
+With **pairs**, the module also writes the coherence, magnitude of T<sub>ij</sub>, of
+pairs of dates, one map `{pairs}_{date1}_{date2}` per pair (dates as
+`YYYYMMDD`, with the time when two dates share a day): each date with the
+next one (**pairs_mode=consecutive**, default, N−1 maps) or every pair
+(**pairs_mode=all**, N(N−1)/2 maps). They are the magnitudes of the
+coherence matrix of the pixel, estimated over its SHPs: the window
+adapts to the pixel, so that a field is not averaged with its neighbours
+when their amplitude histories differ. With **-b** they are bias
+corrected. They are NULL where the temporal coherence is not estimated,
+except for pixels whose dates are unlinked by the bias correction.
+
+The series of consecutive pair coherences dates changes of the surface:
+the pair spanning a harvest, ploughing or mowing loses coherence, and
+the bare soil keeps a higher coherence afterwards.
+
+### Flat-earth and topographic phase
+
+Neighbouring pixels of an interferogram differ by the phase of the
+geometry: the flat-earth phase, growing across the swath with the
+perpendicular baseline, and the topographic phase, proportional to the
+height over the height of ambiguity. Averaged over the window, these
+fringes lower the estimated coherence. The **-f** flag removes the
+flat-earth phase at the annotated terrain height; the **elevation** map
+removes the flat-earth and topographic phase together.
+
+The phase is computed from the orbits by range-Doppler geometry, as SNAP
+does for its interferograms: every pixel of the reference date
+(**reference**, the date the stack is coregistered on, whose grid timing
+is used) is located on the WGS84 ellipsoid raised to its height, then
+every date sees it at the slant range R<sub>k</sub> of its zero-Doppler
+time, and is multiplied by exp(i 4π (R<sub>k</sub> − R<sub>ref</sub>)/λ).
+The phase is computed exactly every 16 lines and samples and at three
+heights spanning the elevation map, and interpolated in between.
+
+The **elevation** map gives the height of every pixel in radar geometry,
+on the grid of the stack, in meters above the WGS84 ellipsoid, e.g. from
+a DEM-assisted coregistration. Heights above the geoid can be used: the
+geoid undulation is smooth and hardly changes the phase within a window.
+Pixels with a NULL height are NULL.
+
+### Orbits
+
+The orbits come from:
+
+- **orbit=precise** (default): the Sentinel-1 precise orbit files
+  (POEORB, about 5 cm), published about three weeks after acquisition;
+- **orbit=restituted**: the restituted orbit files (RESORB), available
+  within hours;
+- **orbit=annotation**: the state vectors of the product annotation,
+  imported by *r.in.s1slc*.
+
+Orbit files are searched in **orbit_dir** (default
+`$HOME/.grass8/sentinel1_orbits`), then downloaded from the ESA STEP
+mirror used by SNAP (`http://step.esa.int/auxdata/orbits/Sentinel-1/`)
+and stored there, unzipped. The file whose validity covers the
+acquisition is used, the latest production when several do.
+
 ### Output metadata
 
 The output maps receive a title, a semantic label (e.g.
-`S1_VV_TEMPORAL_COHERENCE`, `S1_VV_SHP_COUNT`), the time span of the
-stack as timestamp, the command history and a JSON file
+`S1_VV_TEMPORAL_COHERENCE`, `S1_VV_SHP_COUNT`, `S1_VV_COHERENCE`), the
+time span of the stack (of the pair for pair maps) as timestamp, the command history and a JSON file
 `$MAPSET/cell_misc/<map>/description.json` listing the dates, their
-products and orbits and the estimation parameters. The temporal
-coherence map gets a grey color table from 0 (black) to 1 (white).
+products and orbits and the estimation parameters (with the phase
+reference and the orbits used). The temporal and pair coherence maps get
+a grey color table from 0 (black) to 1 (white).
 
 ## NOTES
 
@@ -120,7 +180,8 @@ The cost grows with the window size and with the cube of the number of
 dates. With 20 dates and the default window, an AMD Radeon Pro WX 7100
 (Mesa Clover) processes about 120 000 pixels per second, i.e. a
 sub-swath of three IW bursts (about 37 million pixels) in about five
-minutes. At most 64 dates are supported: every work-item keeps six
+minutes. Removing the flat-earth phase and writing the pair maps add
+about 15 % to it. At most 64 dates are supported: every work-item keeps six
 N×N matrices in private memory.
 
 Some details differ from SNAP (microwave toolbox 2026), where it gives
@@ -135,7 +196,7 @@ value of the t-test is the normal quantile of **alpha**.
 
 The module requires an OpenCL 1.1 driver (ICD) and its development
 files (e.g. Debian `ocl-icd-opencl-dev` and `mesa-opencl-icd` or
-`pocl-opencl-icd`).
+`pocl-opencl-icd`), and GDAL, which also downloads the orbit files.
 
 ## EXAMPLES
 
@@ -158,6 +219,19 @@ i.sar.temporal_coherence \
 
 # Keep the reliable pixels.
 r.mapcalc "tcoh_mask = if(tcoh_vv >= 0.7, 1, null())"
+```
+
+Date the harvests of crop fields: remove the flat-earth and
+topographic phase with precise orbits and an elevation map in radar
+geometry, and write the coherence of every pair of consecutive dates:
+
+```sh
+i.sar.temporal_coherence \
+    input=s1c_20230112_iw2_vv,s1c_20230124_iw2_vv,s1c_20230205_iw2_vv,s1c_20230217_iw2_vv,s1c_20230301_iw2_vv \
+    output=tcoh_vv pairs=coh_vv reference=s1c_20230112_iw2_vv \
+    elevation=s1c_20230112_iw2_elevation
+# coh_vv_20230112_20230124, coh_vv_20230124_20230205, ...
+g.list raster pattern="coh_vv_*"
 ```
 
 List the OpenCL devices, then run on the second device of the first

@@ -376,8 +376,8 @@ void ocl_run(struct ocl *o, const float *slc, const float *amp,
 
 void ocl_close(struct ocl *o)
 {
-    cl_mem *buffers[] = {&o->b_slc,   &o->b_amp,   &o->b_valid,
-                         &o->b_coh,   &o->b_count, &o->b_pairs};
+    cl_mem *buffers[] = {&o->b_slc, &o->b_amp,   &o->b_valid,
+                         &o->b_coh, &o->b_count, &o->b_pairs};
     size_t i;
 
     for (i = 0; i < sizeof(buffers) / sizeof(buffers[0]); i++)

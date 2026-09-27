@@ -89,10 +89,26 @@ def ad_sigma(n):
     k, total = 2, 2 * n
     big_h = 2.0 / n
     h = sum(1.0 / j for j in range(1, total))
-    g = sum(1.0 / ((total - i) * j) for i in range(1, total - 1) for j in range(i + 1, total))
+    g = sum(
+        1.0 / ((total - i) * j)
+        for i in range(1, total - 1)
+        for j in range(i + 1, total)
+    )
     a = (4 * g - 6) * (k - 1) + (10 - 6 * g) * big_h
-    b = (2 * g - 4) * k * k + 8 * h * k + (2 * g - 14 * h - 4) * big_h - 8 * h + 4 * g - 6
-    c = (6 * h + 2 * g - 2) * k * k + (4 * h - 4 * g + 6) * k + (2 * h - 6) * big_h + 4 * h
+    b = (
+        (2 * g - 4) * k * k
+        + 8 * h * k
+        + (2 * g - 14 * h - 4) * big_h
+        - 8 * h
+        + 4 * g
+        - 6
+    )
+    c = (
+        (6 * h + 2 * g - 2) * k * k
+        + (4 * h - 4 * g + 6) * k
+        + (2 * h - 6) * big_h
+        + 4 * h
+    )
     d = (2 * h + 6) * k * k - 4 * h * k
     var = (a * total**3 + b * total**2 + c * total + d) / (
         (total - 1.0) * (total - 2.0) * (total - 3.0)
@@ -190,13 +206,16 @@ def stack_coherence(
     estimator="evd",
     bias_correction=False,
     with_pairs=False,
+    phase=None,
 ):
     """Temporal coherence and SHP count of a stack slc (N, rows, cols).
 
     NaN (zero samples) marks no-data. Return (coherence, count) with NaN and
     -1 where the centre is invalid, NaN coherence below the SHP minimum.
     With with_pairs, also return the pair coherences |T_ij|, shape
-    (N, N, rows, cols), NaN where the pixel is not estimated.
+    (N, N, rows, cols), NaN where the pixel is not estimated. phase
+    (N, rows, cols) is added to the samples after the amplitudes are taken,
+    as the module removes the flat-earth and topographic phase.
     """
     n, rows, cols = slc.shape
     ha, hr = window[0] // 2, window[1] // 2
@@ -205,6 +224,8 @@ def stack_coherence(
     # sqrt(re^2 + im^2) as SNAP: samples with the same power tie exactly,
     # where np.abs (hypot) may differ by one unit in the last place.
     amp = np.sqrt(finite.real**2 + finite.imag**2)
+    if phase is not None:
+        slc = slc * np.exp(1j * phase)
     coh = np.full((rows, cols), np.nan)
     count = np.full((rows, cols), -1)
     pairs = np.full((n, n, rows, cols), np.nan)

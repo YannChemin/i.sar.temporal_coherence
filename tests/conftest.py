@@ -69,8 +69,13 @@ def write_map(session, name, array, is_int):
     )
 
 
-def write_epoch(session, basename, slc, day, metadata=True, is_int=True, **overrides):
-    """Write one date as <basename>_i/_q with r.in.s1slc-like metadata."""
+def write_epoch(
+    session, basename, slc, day, metadata=True, is_int=True, extra=None, **overrides
+):
+    """Write one date as <basename>_i/_q with r.in.s1slc-like metadata.
+
+    extra maps metadata sections to entries added to them (e.g. geometry).
+    """
     write_map(session, basename + "_i", slc.real, is_int)
     write_map(session, basename + "_q", slc.imag, is_int)
     if not metadata:
@@ -99,6 +104,8 @@ def write_epoch(session, basename, slc, day, metadata=True, is_int=True, **overr
         "absolute_calibration_constant": None,
         "thermal_noise_removed": False,
     }
+    for section, entries in (extra or {}).items():
+        meta.setdefault(section, {}).update(entries)
     env = gs.gisenv(env=session.env)
     meta_dir = os.path.join(
         env["GISDBASE"],
@@ -112,15 +119,29 @@ def write_epoch(session, basename, slc, day, metadata=True, is_int=True, **overr
         json.dump(meta, fd)
 
 
-def write_stack(session, prefix, stack, **kwargs):
-    """Write every date of the stack, 12 days apart; return the basenames."""
+def write_stack(session, prefix, stack, geometry=None, **kwargs):
+    """Write every date of the stack, 12 days apart; return the basenames.
+
+    geometry is a geometry_model.Stack whose metadata are added to the dates.
+    """
     names = []
     for k, slc in enumerate(stack):
         name = "{}_{:02d}_iw1_vv".format(prefix, k)
-        write_epoch(session, name, slc, 12 * k, **kwargs)
+        extra = geometry.metadata(k) if geometry else None
+        write_epoch(session, name, slc, 12 * k, extra=extra, **kwargs)
         names.append(name)
     gs.run_command("g.region", raster=names[0] + "_i", env=session.env)
     return names
+
+
+def geometry_stack(n, rows=ROWS, cols=COLS, baselines=None, ref=0):
+    """Synthetic orbits of n dates 12 days apart, matching write_stack."""
+    from geometry_model import Stack
+
+    if baselines is None:
+        baselines = [0.0, 300.0, -200.0, 450.0, 100.0, -350.0][:n]
+    times = [T0 + timedelta(days=12 * k) for k in range(n)]
+    return Stack(times, baselines, ref, rows, cols, T0)
 
 
 class Session:
@@ -155,7 +176,9 @@ def run_module(session, *flags, **kwargs):
     args = [module_binary(session)]
     args += ["-" + f for f in flags]
     args += ["{}={}".format(k, v) for k, v in kwargs.items()]
-    return subprocess.run(args, env=session.env, capture_output=True, text=True, check=False)
+    return subprocess.run(
+        args, env=session.env, capture_output=True, text=True, check=False
+    )
 
 
 def read_map(session, name):
