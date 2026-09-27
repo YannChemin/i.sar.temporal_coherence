@@ -36,8 +36,9 @@ struct ocl {
     int ndates;
     int chunk_rows; /* rows per kernel launch */
     size_t local[2];
-    cl_mem b_slc, b_amp, b_valid, b_coh, b_count;
-    size_t n_slc, n_amp, n_valid, n_coh, n_count;
+    cl_mem b_slc, b_amp, b_valid, b_coh, b_count, b_pairs;
+    size_t n_slc, n_amp, n_valid, n_coh, n_count, n_pairs;
+    int npairs;
 };
 
 #define CHECK(err, what)                                                   \
@@ -200,6 +201,7 @@ struct ocl *ocl_open(int platform, int device, const struct settings *s,
     o->device = select_device(platform, device);
     o->padded_cols = padded_cols;
     o->ndates = s->ndates;
+    o->npairs = s->npairs;
     o->chunk_rows = 1;
     device_string(o->device, CL_DEVICE_NAME, name, sizeof(name));
     clGetDeviceInfo(o->device, CL_DEVICE_PLATFORM, sizeof(pid), &pid, NULL);
@@ -220,10 +222,11 @@ struct ocl *ocl_open(int platform, int device, const struct settings *s,
     snprintf(options, sizeof(options),
              "-DN=%d -DWA=%d -DWR=%d -DW=%d -DSHP_TEST=%d -DEMI=%d "
              "-DBIAS=%d -DMIN_LOOKS=%d -DKS_MAX=%d -DAD_NORM=%.9ef "
-             "-DAD_SIGMA=%.9ef -DAD_CRIT=%.9ef -DTLOG_CRIT=%.9ef",
+             "-DAD_SIGMA=%.9ef -DAD_CRIT=%.9ef -DTLOG_CRIT=%.9ef "
+             "-DNPAIRS=%d -DPAIRS_ALL=%d",
              s->ndates, s->win_az, s->win_rg, padded_cols, (int)s->test, s->emi,
              s->bias, s->min_looks, s->ks_max, s->ad_norm, s->ad_sigma,
-             s->ad_crit, s->tlog_crit);
+             s->ad_crit, s->tlog_crit, s->npairs, s->pairs_all);
     G_debug(1, "OpenCL build options: %s", options);
     err = clBuildProgram(o->program, 1, &o->device, options, NULL, NULL);
     if (err != CL_SUCCESS) {
@@ -275,7 +278,7 @@ static void ensure_buffer(struct ocl *o, cl_mem *b, size_t *have, size_t size,
 
 void ocl_run(struct ocl *o, const float *slc, const float *amp,
              const unsigned char *valid, int padded_rows, int rows, int cols,
-             float *coh, int *count)
+             float *coh, int *count, float *pairs)
 {
     const size_t npad = (size_t)padded_rows * o->padded_cols;
     const size_t nout = (size_t)rows * cols;
@@ -291,6 +294,10 @@ void ocl_run(struct ocl *o, const float *slc, const float *amp,
     ensure_buffer(o, &o->b_coh, &o->n_coh, nout * sizeof(float),
                   CL_MEM_WRITE_ONLY);
     ensure_buffer(o, &o->b_count, &o->n_count, nout * sizeof(int),
+                  CL_MEM_WRITE_ONLY);
+    /* A kernel argument needs a buffer even without pairs. */
+    ensure_buffer(o, &o->b_pairs, &o->n_pairs,
+                  (o->npairs ? o->npairs * nout : 1) * sizeof(float),
                   CL_MEM_WRITE_ONLY);
 
     CHECK(clEnqueueWriteBuffer(o->queue, o->b_slc, CL_FALSE, 0,
@@ -314,8 +321,10 @@ void ocl_run(struct ocl *o, const float *slc, const float *amp,
           "clSetKernelArg");
     CHECK(clSetKernelArg(o->kernel, 4, sizeof(cl_mem), &o->b_count),
           "clSetKernelArg");
-    CHECK(clSetKernelArg(o->kernel, 5, sizeof(cl_int), &r), "clSetKernelArg");
-    CHECK(clSetKernelArg(o->kernel, 6, sizeof(cl_int), &c), "clSetKernelArg");
+    CHECK(clSetKernelArg(o->kernel, 5, sizeof(cl_mem), &o->b_pairs),
+          "clSetKernelArg");
+    CHECK(clSetKernelArg(o->kernel, 6, sizeof(cl_int), &r), "clSetKernelArg");
+    CHECK(clSetKernelArg(o->kernel, 7, sizeof(cl_int), &c), "clSetKernelArg");
 
     /* Launch in chunks of rows lasting about TARGET_SECONDS each: a single
        long kernel is killed by the GPU driver watchdog (amdgpu lockup
@@ -355,6 +364,11 @@ void ocl_run(struct ocl *o, const float *slc, const float *amp,
     CHECK(clEnqueueReadBuffer(o->queue, o->b_coh, CL_FALSE, 0,
                               nout * sizeof(float), coh, 0, NULL, NULL),
           "clEnqueueReadBuffer");
+    if (o->npairs)
+        CHECK(clEnqueueReadBuffer(o->queue, o->b_pairs, CL_FALSE, 0,
+                                  o->npairs * nout * sizeof(float), pairs, 0,
+                                  NULL, NULL),
+              "clEnqueueReadBuffer");
     CHECK(clEnqueueReadBuffer(o->queue, o->b_count, CL_TRUE, 0,
                               nout * sizeof(int), count, 0, NULL, NULL),
           "clEnqueueReadBuffer");
@@ -362,8 +376,8 @@ void ocl_run(struct ocl *o, const float *slc, const float *amp,
 
 void ocl_close(struct ocl *o)
 {
-    cl_mem *buffers[] = {&o->b_slc, &o->b_amp, &o->b_valid, &o->b_coh,
-                         &o->b_count};
+    cl_mem *buffers[] = {&o->b_slc,   &o->b_amp,   &o->b_valid,
+                         &o->b_coh,   &o->b_count, &o->b_pairs};
     size_t i;
 
     for (i = 0; i < sizeof(buffers) / sizeof(buffers[0]); i++)

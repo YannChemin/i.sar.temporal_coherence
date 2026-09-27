@@ -13,10 +13,14 @@
  *   KS_MAX     largest accepted KS distance, in steps of 1 / N
  *   AD_NORM, AD_SIGMA, AD_CRIT  Anderson-Darling normalization and critical
  *   TLOG_CRIT  critical value of the t-test
+ *   NPAIRS     number of pair coherences to write (0: none)
+ *   PAIRS_ALL  1 for all pairs i < j, 0 for consecutive pairs (i, i + 1)
  *
  * Buffers cover the padded strip, row-major with W columns: slc holds the N
  * complex samples of a pixel, amp their amplitudes sorted increasingly and
  * valid is non-zero where every date has a non-null, non-zero sample.
+ * pair_coh holds one plane of rows x cols per pair, in the order
+ * (0,1), (0,2), ... for all pairs or (0,1), (1,2), ... for consecutive ones.
  */
 
 #define MAX_SWEEPS   40
@@ -508,12 +512,28 @@ int connected(const float *tr, const float *ti)
     return reached == N;
 }
 
+/* Pair coherences |T_ij| of the pixel, or NaN when tr is NULL. */
+void store_pairs(__global float *pair_coh, size_t plane, size_t pix,
+                 const float *tr, const float *ti)
+{
+#if NPAIRS > 0
+    int i, j, p = 0;
+
+    for (i = 0; i < N - 1; i++)
+        for (j = i + 1; j < (PAIRS_ALL ? N : i + 2); j++, p++)
+            pair_coh[p * plane + pix] =
+                tr ? hypot(tr[i * N + j], ti[i * N + j]) : NAN;
+#endif
+}
+
 __kernel void temporal_coherence(__global const float2 *slc,
                                  __global const float *amp,
                                  __global const uchar *valid,
                                  __global float *coh, __global int *count,
-                                 const int rows, const int cols)
+                                 __global float *pair_coh, const int rows,
+                                 const int cols)
 {
+    const size_t plane = (size_t)rows * cols;
     const int x = get_global_id(0);
     const int y = get_global_id(1);
     float tr[N * N], ti[N * N], ar[N * N], ai[N * N], vr[N * N], vi[N * N];
@@ -528,6 +548,7 @@ __kernel void temporal_coherence(__global const float2 *slc,
     if (!valid[centre]) {
         coh[y * cols + x] = NAN;
         count[y * cols + x] = -1;
+        store_pairs(pair_coh, plane, y * cols + x, NULL, NULL);
         return;
     }
     a = amp + (size_t)centre * N;
@@ -582,6 +603,7 @@ __kernel void temporal_coherence(__global const float2 *slc,
     count[y * cols + x] = looks;
     if (looks < MIN_LOOKS) {
         coh[y * cols + x] = NAN;
+        store_pairs(pair_coh, plane, y * cols + x, NULL, NULL);
         return;
     }
 
@@ -612,6 +634,9 @@ __kernel void temporal_coherence(__global const float2 *slc,
         tr[i * N + i] = 1.0f;
         ti[i * N + i] = 0.0f;
     }
+    /* Pair coherences are defined even when the temporal coherence below
+       is not. */
+    store_pairs(pair_coh, plane, y * cols + x, tr, ti);
 
     /* With the bias correction, coherences can be zeroed until the dates
        split into groups without coherence between them: the relative phase

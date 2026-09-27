@@ -41,6 +41,8 @@ struct settings {
     int ks_max;
     double ad_norm, ad_sigma, ad_crit;
     double tlog_crit;
+    int npairs;    /* pair coherence maps to write, 0 for none */
+    int pairs_all; /* all pairs i < j instead of consecutive ones */
 };
 
 /* epoch.c */
@@ -65,7 +67,7 @@ struct ocl *ocl_open(int platform, int device, const struct settings *s,
                      int padded_cols, size_t *max_alloc);
 void ocl_run(struct ocl *o, const float *slc, const float *amp,
              const unsigned char *valid, int padded_rows, int rows, int cols,
-             float *coh, int *count);
+             float *coh, int *count, float *pairs);
 void ocl_close(struct ocl *o);
 
 #endif

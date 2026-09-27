@@ -189,11 +189,14 @@ def stack_coherence(
     min_shp=20,
     estimator="evd",
     bias_correction=False,
+    with_pairs=False,
 ):
     """Temporal coherence and SHP count of a stack slc (N, rows, cols).
 
     NaN (zero samples) marks no-data. Return (coherence, count) with NaN and
     -1 where the centre is invalid, NaN coherence below the SHP minimum.
+    With with_pairs, also return the pair coherences |T_ij|, shape
+    (N, N, rows, cols), NaN where the pixel is not estimated.
     """
     n, rows, cols = slc.shape
     ha, hr = window[0] // 2, window[1] // 2
@@ -204,6 +207,7 @@ def stack_coherence(
     amp = np.sqrt(finite.real**2 + finite.imag**2)
     coh = np.full((rows, cols), np.nan)
     count = np.full((rows, cols), -1)
+    pairs = np.full((n, n, rows, cols), np.nan)
     min_looks = max(min_shp, n)
     if shp_test == "ad":
         sigma, critical = ad_sigma(n), ad_critical(alpha)
@@ -234,7 +238,10 @@ def stack_coherence(
             if looks < min_looks:
                 continue
             t = coherence_matrix(cov, looks, bias_correction)
+            pairs[:, :, y, x] = np.abs(t)
             if bias_correction and not connected(t):
                 continue
             coh[y, x] = temporal_coherence(t, phases(t, estimator))
+    if with_pairs:
+        return coh, count, pairs
     return coh, count
