@@ -55,6 +55,8 @@ void utc_from_seconds(double sec, struct utc *t);
 
 /* jsonget.c */
 char *json_get(const char *text, const char *path);
+double json_get_number(const char *text, const char *path);
+int json_array_length(const char *text, const char *path);
 char *read_text_file(const char *path);
 
 /* stats.c */
